@@ -20,7 +20,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from cl_ai.platform_ import PROFILES, is_available
+from cl_ai.platform_ import PROFILES, is_available, resolve_executable
 from cl_ai.render import quoting
 
 TIMEOUT = 30
@@ -106,6 +106,12 @@ def roundtrip(value: str, shell_id: str) -> str:
         raise OracleUnavailable(shell_id)
 
     profile = PROFILES[shell_id]
+    # The resolved path, never the bare name: `which bash` on Windows finds the
+    # System32 WSL launcher, which exits 1 with an empty stderr and can run
+    # nothing at all.
+    exe = resolve_executable(shell_id)
+    if exe is None:
+        raise OracleUnavailable(shell_id)
     quoted = quoting.quote(value, profile)
 
     # Deliberately NOT the system temp dir. Under WSL (and some sandboxes) the
@@ -118,10 +124,10 @@ def roundtrip(value: str, shell_id: str) -> str:
 
         if shell_id in ("bash", "zsh", "fish"):
             script = d / "s.sh"
-            out_literal = quoting.quote(_posix_path(out, profile.exec_flags[0]), profile)
+            out_literal = quoting.quote(_posix_path(out, exe), profile)
             script.write_text(f"printf %s {quoted} > {out_literal}\n",
                               encoding="utf-8", newline="\n")
-            proc = _run([profile.exec_flags[0], _posix_path(script, profile.exec_flags[0])], d)
+            proc = _run([exe, _posix_path(script, exe)], d)
 
         elif shell_id in ("powershell", "pwsh"):
             script = d / "s.ps1"
@@ -140,7 +146,7 @@ def roundtrip(value: str, shell_id: str) -> str:
             )
             # Windows PowerShell 5.1 reads a .ps1 as ANSI unless it has a BOM.
             script.write_text(body, encoding="utf-8-sig", newline="\n")
-            argv = [profile.exec_flags[0], "-NoProfile", "-NonInteractive"]
+            argv = [exe, "-NoProfile", "-NonInteractive"]
             # -ExecutionPolicy exists only on Windows. pwsh on Linux and macOS
             # rejects the parameter outright ("not supported on this platform"),
             # so passing it unconditionally fails every non-Windows pwsh run.
@@ -154,7 +160,7 @@ def roundtrip(value: str, shell_id: str) -> str:
             # the caller strips the trailing CRLF.
             script.write_text(f"@echo off\r\necho {quoted}> {out_literal}\r\n",
                               encoding="utf-8", newline="")
-            proc = _run(["cmd", "/c", str(script)], d)
+            proc = _run([exe, "/c", str(script)], d)
 
         else:
             raise OracleUnavailable(shell_id)

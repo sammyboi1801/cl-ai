@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
@@ -172,16 +173,78 @@ def get_profile(shell_id: str) -> ShellProfile:
         ) from None
 
 
+#: Places a working shell hides when the name on PATH resolves to something
+#: else. Windows ships C:\Windows\System32\bash.exe -- a launcher for WSL that,
+#: with no distribution installed, exits 1 and writes nothing to stderr. It
+#: precedes Git's bash on PATH, so `which bash` finds a binary that cannot run
+#: anything. Observed on GitHub's windows-latest runners.
+_FALLBACK_PATHS: dict[str, tuple[str, ...]] = {
+    "bash": (
+        r"C:\Program Files\Git\bin\bash.exe",
+        r"C:\Program Files\Git\usr\bin\bash.exe",
+        r"C:\Program Files (x86)\Git\bin\bash.exe",
+    ),
+}
+
+_EXEC_CACHE: dict[str, str | None] = {}
+
+
+def _works(executable: str, shell_id: str) -> bool:
+    """Run a trivial command and require a distinctive exit code.
+
+    Existence on disk is not usability. We ask for exit code 7 specifically so
+    that a launcher failing for its own reasons -- which typically exits 1 --
+    cannot be mistaken for success.
+    """
+    if shell_id in ("powershell", "pwsh"):
+        argv = [executable, "-NoProfile", "-NonInteractive", "-Command", "exit 7"]
+    elif shell_id == "cmd":
+        argv = [executable, "/c", "exit 7"]
+    else:
+        argv = [executable, "-c", "exit 7"]
+    try:
+        completed = subprocess.run(
+            argv, capture_output=True, timeout=30,
+            stdin=subprocess.DEVNULL, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 7
+
+
+def resolve_executable(shell_id: str) -> str | None:
+    """The path to a shell that actually runs, or None.
+
+    Deliberately functional rather than nominal: a name on PATH is a claim, and
+    this checks it. Cached, because it costs a process per shell.
+    """
+    if shell_id in _EXEC_CACHE:
+        return _EXEC_CACHE[shell_id]
+
+    profile = PROFILES.get(shell_id)
+    resolved: str | None = None
+    if profile and profile.exec_flags:
+        candidates = []
+        found = shutil.which(profile.exec_flags[0])
+        if found:
+            candidates.append(found)
+        candidates.extend(_FALLBACK_PATHS.get(shell_id, ()))
+        for candidate in candidates:
+            if os.path.exists(candidate) and _works(candidate, shell_id):
+                resolved = candidate
+                break
+
+    _EXEC_CACHE[shell_id] = resolved
+    return resolved
+
+
 def is_available(shell_id: str) -> bool:
     """Whether this shell can actually be executed here.
 
     Used by tests to decide between verifying against the real shell and
     skipping with a named marker. Never used to *guess* a profile.
     """
-    profile = PROFILES.get(shell_id)
-    if not profile or not profile.exec_flags:
-        return False
-    return shutil.which(profile.exec_flags[0]) is not None
+    return resolve_executable(shell_id) is not None
 
 
 def detect(env: dict | None = None) -> ShellProfile:
