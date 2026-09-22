@@ -473,3 +473,179 @@ def test_daemon_start_is_a_no_op_when_one_is_already_running(
     monkeypatch.setattr(cli.subprocess, "Popen", forbidden)
     assert main(["daemon", "start"]) == OK
     assert "already running" in capsys.readouterr().out
+
+
+# -- fetch ----------------------------------------------------------------
+
+
+def _tldr_zip(path: Path, *, nested: bool = False, pages: int = 2) -> Path:
+    import zipfile
+
+    prefix = "tldr-main/" if nested else ""
+    with zipfile.ZipFile(path, "w") as archive:
+        for i in range(pages):
+            archive.writestr(
+                f"{prefix}pages/common/tool{i}.md",
+                f"# tool{i}\n\n> Does thing {i}.\n\n- Do it:\n\n`tool{i} --go`\n",
+            )
+    return path
+
+
+def test_fetch_installs_a_corpus_where_the_extractor_will_find_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cl_ai.catalog.extract.tldr import TldrSource
+    from cl_ai.catalog.fetch import fetch
+
+    archive = _tldr_zip(tmp_path / "tldr.zip")
+    target = tmp_path / "corpus"
+    result = fetch(archive.as_uri(), target)
+    assert result.pages == 2
+    assert TldrSource(target).available()
+
+
+def test_fetch_accepts_an_archive_nested_under_one_directory(tmp_path: Path) -> None:
+    """A branch zip nests everything under `tldr-main/`; the release asset
+    does not. Accepting only one shape would leave a --url user with an
+    apparently successful fetch and no corpus."""
+    from cl_ai.catalog.extract.tldr import TldrSource
+    from cl_ai.catalog.fetch import fetch
+
+    archive = _tldr_zip(tmp_path / "tldr.zip", nested=True)
+    target = tmp_path / "corpus"
+    fetch(archive.as_uri(), target)
+    assert TldrSource(target).available()
+
+
+def test_fetch_refuses_to_clobber_an_existing_corpus(tmp_path: Path) -> None:
+    from cl_ai.catalog.fetch import FetchError, fetch
+
+    archive = _tldr_zip(tmp_path / "tldr.zip")
+    target = tmp_path / "corpus"
+    fetch(archive.as_uri(), target)
+    with pytest.raises(FetchError, match="already holds a corpus"):
+        fetch(archive.as_uri(), target)
+    fetch(archive.as_uri(), target, force=True)
+
+
+def test_a_failed_fetch_leaves_the_existing_corpus_intact(tmp_path: Path) -> None:
+    """The worst outcome would be a half-replaced corpus: a mixture of two
+    releases that parses fine and is quietly wrong."""
+    from cl_ai.catalog.extract.tldr import TldrSource
+    from cl_ai.catalog.fetch import FetchError, fetch
+
+    archive = _tldr_zip(tmp_path / "tldr.zip", pages=3)
+    target = tmp_path / "corpus"
+    fetch(archive.as_uri(), target)
+
+    broken = tmp_path / "broken.zip"
+    broken.write_bytes(b"this is not a zip file")
+    with pytest.raises(FetchError):
+        fetch(broken.as_uri(), target, force=True)
+    assert TldrSource(target).available()
+    assert len(list(target.glob("pages/**/*.md"))) == 3
+
+
+def test_a_non_corpus_archive_is_rejected(tmp_path: Path) -> None:
+    import zipfile
+
+    from cl_ai.catalog.fetch import FetchError, fetch
+
+    archive = tmp_path / "wrong.zip"
+    with zipfile.ZipFile(archive, "w") as handle:
+        handle.writestr("readme.txt", "not a corpus")
+    with pytest.raises(FetchError, match="does not look like a tldr corpus"):
+        fetch(archive.as_uri(), tmp_path / "corpus")
+
+
+def test_an_archive_with_a_traversal_path_is_refused(tmp_path: Path) -> None:
+    """Zip slip. CPython's extract() already sanitises, but an archive from
+    the network is exactly where an explicit refusal earns its lines."""
+    import zipfile
+
+    from cl_ai.catalog.fetch import FetchError, fetch
+
+    archive = tmp_path / "evil.zip"
+    with zipfile.ZipFile(archive, "w") as handle:
+        handle.writestr("pages/common/ok.md", "# ok\n")
+        handle.writestr("../../escaped.txt", "pwned")
+    with pytest.raises(FetchError, match="unsafe path"):
+        fetch(archive.as_uri(), tmp_path / "corpus")
+    assert not (tmp_path.parent / "escaped.txt").exists()
+
+
+def test_an_empty_archive_is_refused(tmp_path: Path) -> None:
+    import zipfile
+
+    from cl_ai.catalog.fetch import FetchError, fetch
+
+    archive = tmp_path / "empty.zip"
+    with zipfile.ZipFile(archive, "w"):
+        pass
+    with pytest.raises(FetchError, match="empty"):
+        fetch(archive.as_uri(), tmp_path / "corpus")
+
+
+def test_an_unreachable_url_reports_rather_than_raising_urlerror(
+    tmp_path: Path,
+) -> None:
+    from cl_ai.catalog.fetch import FetchError, fetch
+
+    missing = (tmp_path / "nope.zip").as_uri()
+    with pytest.raises(FetchError, match="could not reach|HTTP"):
+        fetch(missing, tmp_path / "corpus")
+
+
+def test_fetch_leaves_no_staging_directory_behind(tmp_path: Path) -> None:
+    from cl_ai.catalog.fetch import fetch
+
+    archive = _tldr_zip(tmp_path / "tldr.zip")
+    target = tmp_path / "sub" / "corpus"
+    fetch(archive.as_uri(), target)
+    leftovers = [p.name for p in target.parent.iterdir() if p.name.startswith(".cl-ai")]
+    assert leftovers == []
+
+
+def test_the_fetch_target_is_a_path_the_extractor_already_searches(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Otherwise a fetch lands somewhere only we know about, and a user who
+    later installs a real tldr client ends up with two copies."""
+    from cl_ai.catalog.extract.tldr import default_root
+    from cl_ai.catalog.fetch import default_target
+
+    monkeypatch.delenv("CL_AI_TLDR_ROOT", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    target = default_target()
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "pages").mkdir(exist_ok=True)
+    assert default_root() == target
+
+
+def test_the_cli_reports_a_fetch_failure_without_a_traceback(
+    tmp_path: Path, capsys
+) -> None:
+    assert main(["fetch", "--url", (tmp_path / "gone.zip").as_uri(),
+                 "--target", str(tmp_path / "c")]) == BROKEN
+    assert "fetch failed" in capsys.readouterr().err
+
+
+# -- the install snippet starts the daemon --------------------------------
+
+
+@pytest.mark.parametrize("shell", ["powershell", "pwsh", "bash", "zsh", "fish"])
+def test_the_snippet_starts_the_daemon(shell: str) -> None:
+    """Without this a new shell has no daemon and Tab is just Tab, until the
+    user runs `cl-ai daemon start` by hand -- which nobody does daily."""
+    snippet = cli._snippet(shell, Path("/tmp/widget"))
+    assert "daemon start" in snippet, snippet
+
+
+@pytest.mark.parametrize("shell", ["powershell", "pwsh", "bash", "zsh", "fish"])
+def test_the_snippet_never_blocks_shell_startup(shell: str) -> None:
+    """This runs on the startup path of an interactive shell. A slow or
+    broken cl-ai must cost the feature, never a hang on every prompt."""
+    snippet = cli._snippet(shell, Path("/tmp/widget"))
+    backgrounded = "Start-Job" in snippet or "&" in snippet
+    assert backgrounded, snippet

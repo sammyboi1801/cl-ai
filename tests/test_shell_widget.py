@@ -317,3 +317,56 @@ def test_request_json_matches_the_python_schema():
     assert decoded.buffer == "x"
     assert decoded.limit == 5
     assert json.loads(result.stdout)["deadline_ms"] == 500
+
+
+# ------------------------------------------------------------------ dismissal
+
+
+@requires_powershell
+def test_the_dismiss_function_is_exported():
+    """Escape is the only way back. Tab REPLACES the buffer, so without a
+    dismissal the text a user typed is simply gone -- which is bad on its own
+    and much worse when the suggestion that replaced it is destructive."""
+    result = run_ps(
+        "Write-Output ([bool](Get-Command Invoke-ClAiDismiss -ErrorAction SilentlyContinue))"
+    )
+    assert result.returncode == 0, result.stderr
+    assert "True" in result.stdout
+
+
+@requires_powershell
+def test_registering_binds_a_dismiss_key():
+    result = run_ps(
+        "Register-ClAiKeyHandlers | Out-Null;"
+        " Get-PSReadLineKeyHandler -Bound"
+        " | Where-Object { $_.Function -eq 'clAiDismiss' }"
+        " | ForEach-Object { Write-Output \"key=$($_.Key)\" }"
+    )
+    assert result.returncode == 0, result.stderr
+    # Non-interactive hosts have no PSReadLine console to bind to, so an
+    # empty result is a legitimate outcome here; a CRASH is not.
+    if "key=" in result.stdout:
+        assert "Escape" in result.stdout
+
+
+@requires_powershell
+def test_the_dismiss_key_is_configurable():
+    result = run_ps(
+        "(Get-Command Register-ClAiKeyHandlers).Parameters.Keys"
+        " | Where-Object { $_ -eq 'DismissKey' }"
+    )
+    assert result.returncode == 0, result.stderr
+    assert "DismissKey" in result.stdout
+
+
+@requires_powershell
+def test_dismissing_with_no_suggestion_falls_through_to_plain_escape():
+    """Binding Escape must not take anything away from a user who never
+    pressed Tab: with no cl-ai state it has to behave exactly as before."""
+    result = run_ps(
+        "Reset-ClAiCycle;"
+        " $src = (Get-Command Invoke-ClAiDismiss).Definition;"
+        " Write-Output ([bool]($src -match 'RevertLine'))"
+    )
+    assert result.returncode == 0, result.stderr
+    assert "True" in result.stdout

@@ -156,6 +156,39 @@ function Reset-ClAiCycle {
     $script:OriginalLine = $null
 }
 
+function Invoke-ClAiDismiss {
+    <#
+        .SYNOPSIS
+        Escape: put the line back the way the user typed it.
+
+        .DESCRIPTION
+        Tab REPLACES the buffer, so without this there is no way back. Type
+        "commit everything with a message", press Tab, dislike what arrives,
+        and the text you wrote is gone -- you are retyping it from memory.
+        That is bad on its own and much worse when the suggestion is
+        destructive, because the only escape from a wrong one was to clear
+        the line by hand.
+
+        When cl-ai owns no state this falls through to exactly what Escape
+        already did, so binding it takes nothing away.
+    #>
+    param($key, $arg)
+
+    if ($script:Candidates.Count -eq 0) {
+        [Microsoft.PowerShell.PSConsoleReadLine]::RevertLine()
+        return
+    }
+
+    # Captured first: Reset-ClAiCycle nulls it.
+    $original = $script:OriginalLine
+    Reset-ClAiCycle
+
+    [Microsoft.PowerShell.PSConsoleReadLine]::RevertLine()
+    if (-not [string]::IsNullOrEmpty($original)) {
+        [Microsoft.PowerShell.PSConsoleReadLine]::Insert($original)
+    }
+}
+
 function Show-ClAiCandidate {
     <#
         .SYNOPSIS
@@ -254,7 +287,8 @@ function Register-ClAiKeyHandlers {
     param(
         [string]$CompleteKey = 'Tab',
         [string]$NextKey     = 'DownArrow',
-        [string]$PreviousKey = 'UpArrow'
+        [string]$PreviousKey = 'UpArrow',
+        [string]$DismissKey  = 'Escape'
     )
 
     if (-not (Get-Module -ListAvailable -Name PSReadLine)) {
@@ -272,6 +306,8 @@ function Register-ClAiKeyHandlers {
         -BriefDescription 'clAiNext' -Description 'Next cl-ai suggestion'
     Set-PSReadLineKeyHandler -Key $PreviousKey -ScriptBlock ${function:Invoke-ClAiPrevious} `
         -BriefDescription 'clAiPrevious' -Description 'Previous cl-ai suggestion'
+    Set-PSReadLineKeyHandler -Key $DismissKey -ScriptBlock ${function:Invoke-ClAiDismiss} `
+        -BriefDescription 'clAiDismiss' -Description 'Restore the line you typed'
     return $true
 }
 
@@ -280,6 +316,7 @@ Export-ModuleMember -Function @(
     'Invoke-ClAiComplete'
     'Invoke-ClAiNext'
     'Invoke-ClAiPrevious'
+    'Invoke-ClAiDismiss'
     'Get-ClAiSuggestions'
     'Invoke-ClAiRequest'
     'Get-ClAiPortFile'

@@ -40,7 +40,7 @@ from ..catalog.discovery import Inventory, discover
 from ..catalog.normalize import Catalog
 from ..ir import ContextFacts
 from ..platform_ import PROFILES
-from ..retrieval.examples import command_for
+from ..retrieval.examples import best_example, command_for, is_destructive
 from ..retrieval.index import ToolIndex
 from .protocol import ErrorCode, Kind, Request, Response, Suggestion, version_mismatch
 from .transport import Server, default_endpoint
@@ -264,15 +264,26 @@ class Daemon:
             if suggestions and time.monotonic() - started > budget:
                 break                          # partial beats late
             tool = candidate.tool
+            chosen = best_example(tool, query)
             suggestions.append(
                 Suggestion(
                     command=command_for(tool, query),
                     description=tool.description,
                     source=_source_of(tool),
-                    # The catalog's judgement, widened by the static list. A
-                    # missed marking is the direction that costs a user their
-                    # files, so the two are unioned rather than ranked.
-                    dangerous=candidate.dangerous or _looks_destructive(tool.binary),
+                    # Three independent judgements, unioned. A missed marking
+                    # is the direction that costs a user their files, so a
+                    # yes from any of them is a yes.
+                    #
+                    # The EXAMPLE one is the load-bearing addition. The other
+                    # two ask "is this a dangerous tool?", and `git` is not --
+                    # yet `git reset --hard` was reaching the buffer with no
+                    # warning at all, because nothing looked at the line that
+                    # was actually being suggested.
+                    dangerous=(
+                        candidate.dangerous
+                        or _looks_destructive(tool.binary)
+                        or (chosen is not None and is_destructive(chosen))
+                    ),
                 )
             )
         return Response(suggestions=tuple(suggestions))

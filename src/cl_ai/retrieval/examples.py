@@ -63,11 +63,83 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 
+from cl_ai.catalog.extract.base import DESTRUCTIVE_HINTS
 from cl_ai.ir import Example, Tool
 
 from .text import tokenize, tokenize_query, unique
 
-__all__ = ["best_example", "rank_examples"]
+__all__ = [
+    "best_example",
+    "command_for",
+    "is_destructive",
+    "matched_terms",
+    "rank_examples",
+]
+
+#: Flags that destroy work regardless of which command carries them. Kept
+#: separate from DESTRUCTIVE_HINTS, which is about command NAMES: `git` is
+#: not a destructive tool, but `git reset --hard` is a destructive line, and
+#: the name-based list can never see that.
+_DESTRUCTIVE_FLAGS: tuple[str, ...] = (
+    "--hard", "--force", "--delete", "--purge", "--prune", "--all-databases",
+    "--no-preserve-root", "-rf", "-fr", "/f ", "/s ", "/q",
+)
+
+#: Destructive as a SUBCOMMAND rather than as a binary. DESTRUCTIVE_HINTS is
+#: a list of command names -- `rm`, `shred`, `dd` -- and cannot see that the
+#: danger in `git clean -f` or `kubectl delete` lives in the second word.
+#:
+#: Leaning inclusive, matching the policy on DESTRUCTIVE_HINTS itself: a
+#: false positive is a needless warning, a false negative is lost work, and
+#: those costs are nowhere near equal. `npm uninstall` getting a marker it
+#: arguably does not need is a price worth paying.
+_DESTRUCTIVE_WORDS: frozenset[str] = frozenset({
+    "clean", "cleanup", "remove", "delete", "uninstall", "obliterate",
+})
+
+#: Words that show the user actually WANTS something destroyed. Only with one
+#: of these may a destructive example outrank a safe sibling.
+_DESTRUCTIVE_INTENT: frozenset[str] = frozenset({
+    "delete", "deleted", "destroy", "discard", "drop", "erase", "force",
+    "kill", "nuke", "obliterate", "overwrite", "prune", "purge", "remove",
+    "reset", "rid", "scrap", "shred", "throw", "trash", "truncate", "undo",
+    "uninstall", "wipe", "clean", "clear", "revert", "rollback", "hard",
+    "unstage", "abandon",
+})
+
+#: How much a destructive example is held back when the query gives no sign
+#: the user wants one. Large enough to lose a near-tie, small enough that a
+#: genuinely destructive request still wins on its own evidence.
+_UNWANTED_DESTRUCTION_PENALTY = 4.0
+
+
+def is_destructive(example: Example) -> bool:
+    """Whether running this line could destroy work.
+
+    Judged per EXAMPLE, which is the gap this fills. `Capability.DESTRUCTIVE`
+    is deliberately computed from a tool's identity and prose and never from
+    its examples -- see catalog/extract/base.py, which explains that a bare
+    binary's examples span its whole surface, so one destructive example
+    would mark `git` and `docker` dangerous for every query.
+
+    That reasoning is right for the TOOL. It also means nothing was checking
+    the one thing that actually reaches the user's buffer. Measured, `git`
+    was suggesting `git reset --hard; git clean --force` for "commit
+    everything with a message", unflagged, one Enter from discarding the
+    work the user was trying to save.
+    """
+    text = example.command.lower()
+    if any(flag in text for flag in _DESTRUCTIVE_FLAGS):
+        return True
+    # Any word of the command line, so `git clean` and `docker system prune`
+    # are caught as well as a bare `rm`. Split on shell punctuation too: the
+    # example above hides `git clean` behind a semicolon.
+    words = {w.strip(";|&()<>'\"`") for w in text.replace(";", " ").split()}
+    return bool(words & (DESTRUCTIVE_HINTS | _DESTRUCTIVE_WORDS))
+
+
+def _wants_destruction(terms: Sequence[str]) -> bool:
+    return bool(set(terms) & _DESTRUCTIVE_INTENT)
 
 #: How much a term appearing in the command itself counts, relative to the
 #: same term in the description. Below 1.0 because a description is written as
@@ -86,7 +158,9 @@ def rank_examples(tool: Tool, query: str) -> list[tuple[float, Example]]:
     if not tool.examples:
         return []
 
-    terms = set(tokenize_query(query))
+    query_terms = tokenize_query(query)
+    terms = set(query_terms)
+    wants_destruction = _wants_destruction(query_terms)
     examples = tool.examples
     total = len(examples)
 
@@ -112,6 +186,20 @@ def rank_examples(tool: Tool, query: str) -> list[tuple[float, Example]]:
                 score += weight
             elif term in commanded[position]:
                 score += weight * _COMMAND_WEIGHT
+        # A destructive example needs the user to have ASKED. The asymmetry
+        # is not a preference: suggesting `git commit` to someone who wanted
+        # a reset costs one keystroke, and suggesting `git reset --hard` to
+        # someone who wanted to commit costs them their work. Those are not
+        # comparable, so a near-tie must not be settled on score alone.
+        #
+        # A penalty rather than exclusion, because a user who does ask to
+        # discard changes must still get the command. This only decides who
+        # wins when the evidence is thin -- which is exactly when "commit
+        # everything" was matching "Reset everything ... in the latest
+        # commit" on the incidental word "everything".
+        if not wants_destruction and is_destructive(example):
+            score -= _UNWANTED_DESTRUCTION_PENALTY
+
         # Position breaks ties toward the earlier example, which on a tldr
         # page means the more common usage. Small enough that it can never
         # outweigh a real term match.

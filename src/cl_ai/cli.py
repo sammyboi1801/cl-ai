@@ -1,4 +1,7 @@
-"""`cl-ai` entry point: init | doctor | index | suggest | daemon.
+"""`cl-ai` entry point: fetch | index | init | doctor | suggest | daemon.
+
+The install path is `fetch` -> `index` -> `init`, and `doctor` says which of
+those has not happened yet.
 
 WHY `doctor` IS THE CENTREPIECE
 Every failure in this system is designed to degrade silently. No daemon means
@@ -144,11 +147,15 @@ def _check_sources() -> Check:
         except Exception:  # noqa: BLE001
             missing.append(name)
     if not available:
+        # The commonest state on a fresh machine, and the one that makes
+        # everything else look broken: no corpus means no catalog means Tab
+        # completes names and nothing else. Name the fix.
         return Check(
             "catalog sources",
             "fail",
-            f"none available ({', '.join(missing) or 'no tiers'}); "
-            "set CL_AI_TLDR_ROOT to a tldr checkout",
+            f"none available ({', '.join(missing) or 'no tiers'}). "
+            "Run `cl-ai fetch` to download the tldr corpus, "
+            "or set CL_AI_TLDR_ROOT to an existing checkout",
         )
     detail = ", ".join(available)
     if missing:
@@ -380,19 +387,27 @@ class _Engine:
 
     def detailed(self, query: str, *, limit: int = 5) -> list[tuple[str, str, bool]]:
         from .daemon.server import _looks_destructive
-        from .retrieval.examples import command_for
+        from .retrieval.examples import best_example, command_for, is_destructive
 
         results = self._index.search(  # type: ignore[attr-defined]
             query, limit=limit, context=self._context
         )
-        return [
-            (
-                command_for(c.tool, query),
-                c.tool.description,
-                c.dangerous or _looks_destructive(c.tool.binary),
+        rows: list[tuple[str, str, bool]] = []
+        for candidate in results:
+            chosen = best_example(candidate.tool, query)
+            rows.append(
+                (
+                    command_for(candidate.tool, query),
+                    candidate.tool.description,
+                    # Must agree with the daemon: the same query through two
+                    # paths marking differently would be worse than either
+                    # rule on its own.
+                    candidate.dangerous
+                    or _looks_destructive(candidate.tool.binary)
+                    or (chosen is not None and is_destructive(chosen)),
+                )
             )
-            for c in results
-        ]
+        return rows
 
 
 # --------------------------------------------------------------------------
@@ -568,6 +583,30 @@ def cmd_daemon(args: argparse.Namespace) -> int:
 # init
 # --------------------------------------------------------------------------
 
+def cmd_fetch(args: argparse.Namespace) -> int:
+    from .catalog.fetch import DEFAULT_URL, LICENCE, FetchError, default_target, fetch
+
+    args.url = args.url or DEFAULT_URL
+    target = Path(args.target) if args.target else default_target()
+    # Printed before the request, not after: a user is entitled to know what
+    # is about to be downloaded and where it will be written.
+    print(f"downloading {args.url}")
+    print(f"        to {target}")
+    started = time.monotonic()
+    try:
+        result = fetch(args.url, target, force=args.force)
+    except FetchError as exc:
+        print(f"\nfetch failed: {exc}", file=sys.stderr)
+        return BROKEN
+    print(
+        f"\n{result.pages} pages, {result.bytes_downloaded / 1_000_000:.1f}MB, "
+        f"{time.monotonic() - started:.1f}s"
+    )
+    print(LICENCE)
+    print("\nnow run `cl-ai index` to build the catalog")
+    return OK
+
+
 def _widget_path(shell_id: str) -> Path | None:
     """The shipped widget for a shell, or None if there is not one yet."""
     root = Path(__file__).parent / "shell"
@@ -626,12 +665,27 @@ def _powershell_profile(shell_id: str) -> Path | None:
 
 
 def _snippet(shell_id: str, widget: Path) -> str:
+    """The lines that go in a shell profile.
+
+    Starts the daemon as well as binding the keys. Without that, a new shell
+    has no daemon and Tab is just Tab until the user runs `cl-ai daemon
+    start` by hand -- which nobody will do every morning, and which makes
+    the whole thing look broken.
+
+    Backgrounded, and every failure swallowed. This runs on the startup path
+    of an interactive shell: a slow or broken cl-ai must cost the user
+    nothing more than the feature, never a hang or an error on every prompt.
+    """
     if shell_id in ("powershell", "pwsh"):
-        body = f"Import-Module '{widget}'\nRegister-ClAiKeyHandlers\n"
+        body = (
+            f"Import-Module '{widget}'\n"
+            "Register-ClAiKeyHandlers | Out-Null\n"
+            "Start-Job { cl-ai daemon start } | Out-Null\n"
+        )
     elif shell_id == "fish":
-        body = f"source '{widget}'\n"
+        body = f"source '{widget}'\ncl-ai daemon start >/dev/null 2>&1 &\ndisown\n"
     else:
-        body = f'. "{widget}"\n'
+        body = f'. "{widget}"\n(cl-ai daemon start >/dev/null 2>&1 &)\n'
     return f"{_MARKER}\n{body}{_END_MARKER}\n"
 
 
@@ -701,6 +755,14 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser("doctor", help="diagnose the installation")
     doctor.add_argument("--json", action="store_true")
     doctor.set_defaults(func=cmd_doctor)
+
+    fetch = sub.add_parser("fetch", help="download the tldr command corpus")
+    fetch.add_argument("--url", default=None, help="archive to download")
+    fetch.add_argument("--target", default=None, help="where to unpack it")
+    fetch.add_argument(
+        "--force", action="store_true", help="replace an existing corpus"
+    )
+    fetch.set_defaults(func=cmd_fetch)
 
     index = sub.add_parser("index", help="build the command catalog")
     index.add_argument(

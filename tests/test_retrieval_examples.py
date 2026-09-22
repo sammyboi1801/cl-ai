@@ -15,6 +15,7 @@ from cl_ai.ir import Example, Tool
 from cl_ai.retrieval.examples import (
     best_example,
     command_for,
+    is_destructive,
     matched_terms,
     rank_examples,
 )
@@ -291,3 +292,124 @@ def test_the_right_tool_is_still_returned_for_that_query() -> None:
     """Bounding the damage above: the failure is example choice, not tool
     choice, and the line inserted is still a real `ipconfig` invocation."""
     assert command_for(IPCONFIG, "what is my ip").startswith("ipconfig")
+
+
+# -- destructive examples need to be asked for -----------------------------
+
+
+GIT_BARE = _tool(
+    ("Create an empty Git repository", "git init"),
+    ("Stage all changes for a commit", "git add --all"),
+    ("Commit changes to version history", "git commit --message message_text"),
+    (
+        "Reset everything the way it was in the latest commit",
+        "git reset --hard; git clean --force",
+    ),
+    name="git",
+    binary="git",
+    path=(),
+    description="Distributed version control system.",
+)
+
+
+def test_a_destructive_example_does_not_win_on_an_incidental_word() -> None:
+    """The measured failure this rule exists for.
+
+    "Reset everything the way it was in the latest commit" matches both
+    "everything" and "commit", and "everything" is rare among git's examples
+    so it carries high IDF. The real commit example matches only "commit".
+    Before this rule, asking to commit put `git reset --hard; git clean
+    --force` in the buffer -- one Enter from discarding the work the user
+    was trying to save.
+    """
+    chosen = best_example(GIT_BARE, "commit everything with a message please")
+    assert chosen is not None
+    assert chosen.command == "git commit --message message_text"
+
+
+def test_a_destructive_example_still_wins_when_it_is_asked_for() -> None:
+    """A penalty, not a ban. Suppressing the command someone explicitly
+    asked for would be its own kind of wrong."""
+    chosen = best_example(GIT_BARE, "reset everything to the last commit")
+    assert chosen is not None
+    assert "--hard" in chosen.command
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "discard all my local changes",
+        "force remove these files",
+        "wipe the working tree",
+        "throw it all away and start over",
+    ],
+)
+def test_various_phrasings_of_destructive_intent_are_recognised(query: str) -> None:
+    from cl_ai.retrieval.examples import _wants_destruction
+    from cl_ai.retrieval.text import tokenize_query
+
+    assert _wants_destruction(tokenize_query(query)), query
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["commit my work", "show the log", "list the branches", "stage a file"],
+)
+def test_ordinary_queries_are_not_read_as_destructive(query: str) -> None:
+    """A false positive here would hold back the right answer for a safe
+    query, so the intent list must not be loose."""
+    from cl_ai.retrieval.examples import _wants_destruction
+    from cl_ai.retrieval.text import tokenize_query
+
+    assert not _wants_destruction(tokenize_query(query)), query
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git reset --hard; git clean --force",
+        "rm -rf path/to/directory",
+        "rm path/to/file",
+        "docker system prune --all --volumes",
+        "taskkill /im process_name",
+        "shred --remove path/to/file",
+        "dd if=file.iso of=/dev/usb",
+        "truncate --size 0 path/to/file",
+        "git branch --delete branch_name",
+    ],
+)
+def test_destructive_commands_are_recognised(command: str) -> None:
+    assert is_destructive(Example(description="d", command=command)), command
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git commit --message \"message\"",
+        "ls -la",
+        "docker container ls",
+        "git log --oneline",
+        "cat path/to/file",
+        "mkdir --parents path/to/dir",
+    ],
+)
+def test_safe_commands_are_not_flagged(command: str) -> None:
+    """A warning on everything is a warning on nothing."""
+    assert not is_destructive(Example(description="s", command=command)), command
+
+
+def test_a_destructive_verb_hidden_behind_a_separator_is_found() -> None:
+    """`git clean` is the second half of a compound line. Splitting only on
+    whitespace would miss it, and that exact line is the one that started
+    all of this."""
+    hidden = Example(description="d", command="git status; git clean -f")
+    assert is_destructive(hidden)
+
+
+def test_marking_is_judged_per_example_not_per_tool() -> None:
+    """`git` is correctly NOT a destructive tool -- its examples span the
+    whole of git. That is why the tool-level capability could never catch
+    this, and why the check has to live here."""
+    safe, destructive = GIT_BARE.examples[2], GIT_BARE.examples[3]
+    assert not is_destructive(safe)
+    assert is_destructive(destructive)

@@ -29,8 +29,9 @@ from pathlib import Path
 from cl_ai.catalog.discovery import discover
 from cl_ai.catalog.extract.tldr import TldrSource
 from cl_ai.catalog.normalize import normalize
+from cl_ai.daemon.server import _looks_destructive
 from cl_ai.ir import ContextFacts
-from cl_ai.retrieval.examples import command_for
+from cl_ai.retrieval.examples import best_example, command_for, is_destructive
 from cl_ai.retrieval.index import ToolIndex
 
 from .evalset import Case, Outcome, Report, load_cases, score
@@ -53,11 +54,28 @@ def run(
                 case=case,
                 names=tuple(c.tool.name for c in results),
                 commands=tuple(command_for(c.tool, case.query) for c in results),
-                dangerous_flags=tuple(c.dangerous for c in results),
+                dangerous_flags=tuple(_dangerous(c, case.query) for c in results),
                 elapsed_ms=elapsed,
             )
         )
     return outcomes
+
+
+def _dangerous(candidate: object, query: str) -> bool:
+    """Exactly the rule the daemon applies.
+
+    Duplicated deliberately rather than imported from the daemon, which
+    wants a Request. If the two ever disagree this measures something the
+    user never sees, so the union is written out in full in both places and
+    a test pins that they agree.
+    """
+    tool = candidate.tool  # type: ignore[attr-defined]
+    chosen = best_example(tool, query)
+    return bool(
+        candidate.dangerous  # type: ignore[attr-defined]
+        or _looks_destructive(tool.binary)
+        or (chosen is not None and is_destructive(chosen))
+    )
 
 
 def report(name: str, result: Report, *, verbose: bool = False) -> None:

@@ -902,14 +902,35 @@ def test_root_that_is_a_file(tmp_path: Path) -> None:
 
 
 def test_default_root_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Called during discovery; a crash here takes the daemon down."""
+    """Called during discovery; a crash here takes the daemon down.
+
+    Every search location is cleared, so "nothing found" is ARRANGED. The
+    earlier version cleared only the override and the home directory, and
+    passed because the developer happened to have no tldr client installed.
+    It failed the moment `cl-ai fetch` put a corpus in LOCALAPPDATA -- which
+    is to say, the moment the product started working.
+    """
     monkeypatch.delenv("CL_AI_TLDR_ROOT", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
 
     def no_home() -> Path:
         raise RuntimeError("no home directory")
 
     monkeypatch.setattr(Path, "home", staticmethod(no_home))
     assert default_root() is None
+
+
+def test_default_root_finds_a_fetched_corpus(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The contract between `cl-ai fetch` and the extractor: a fetch must be
+    picked up with no configuration, or the install has an invisible step."""
+    monkeypatch.delenv("CL_AI_TLDR_ROOT", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    (tmp_path / "tldr" / "pages" / "common").mkdir(parents=True)
+    assert default_root() == tmp_path / "tldr"
 
 
 def test_default_root_honours_the_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

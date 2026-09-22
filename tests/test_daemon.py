@@ -532,3 +532,73 @@ def test_the_handler_is_still_total_with_a_catalog():
     reply = daemon.handle(Request(buffer="anything", shell="bash"))
     assert reply.ok is False
     assert reply.error is ErrorCode.INTERNAL
+
+
+def test_the_daemon_and_the_eval_runner_agree_about_danger():
+    """The danger rule is written out in two places -- the daemon and
+    tests/eval_suggestions.py -- because the eval cannot hand the daemon a
+    Request. If they drift, the eval measures something no user ever sees,
+    which is the one way a measurement can be worse than none.
+    """
+    from cl_ai.ir import ContextFacts
+    from tests.eval_suggestions import _dangerous
+
+    daemon = catalog_daemon()
+    index = daemon.index_for("bash", sys.platform)
+    inventory = daemon.inventory
+    assert index is not None and inventory is not None
+    # The SAME context the daemon uses. Without it the two result lists
+    # differ and zip() silently pairs unrelated rows, which would make this
+    # test pass by comparing the wrong things.
+    context = ContextFacts(
+        os=sys.platform, shell="bash", installed=inventory.names
+    )
+
+    seen: set[bool] = set()
+    for query in (
+        "remove a directory recursively",
+        "commit staged files with a message",
+        "list directory contents",
+        "install a package",
+        "throw away my changes",
+    ):
+        reply = daemon.handle(Request(buffer=query, shell="bash", limit=5))
+        results = index.search(query, limit=5, context=context)
+        assert len(reply.suggestions) == len(results), query
+        for suggestion, candidate in zip(reply.suggestions, results):
+            expected = _dangerous(candidate, query)
+            assert suggestion.dangerous == expected, (query, suggestion.command)
+            seen.add(expected)
+    # Both branches must have been exercised, or agreement is vacuous.
+    assert seen == {True, False}, f"only saw {seen}"
+
+
+def test_a_destructive_example_of_a_safe_tool_is_still_marked():
+    """`git` is correctly not a destructive TOOL, and `git reset --hard` was
+    reaching the buffer unflagged because nothing looked at the line being
+    suggested. This is that gap, asserted from the wire."""
+    from cl_ai.ir import Example, Tool
+    from cl_ai.retrieval.index import ToolIndex
+
+    daemon = Daemon()
+    daemon._inventory = fake_inventory("git")
+    tool = Tool(
+        name="git",
+        description="Distributed version control system.",
+        binary="git",
+        examples=(
+            Example(description="Stage all changes", command="git add --all"),
+            Example(
+                description="Reset everything to the latest commit",
+                command="git reset --hard; git clean --force",
+            ),
+        ),
+    )
+    daemon._indexes[(sys.platform, "bash")] = ToolIndex(tools=(tool,))
+
+    reply = daemon.handle(
+        Request(buffer="reset everything to the latest commit", shell="bash", limit=1)
+    )
+    assert reply.suggestions
+    assert "--hard" in reply.suggestions[0].command
+    assert reply.suggestions[0].dangerous is True
