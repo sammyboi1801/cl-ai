@@ -208,6 +208,13 @@ class Server:
     # -- lifecycle --------------------------------------------------------
 
     def start(self) -> None:
+        # Idempotent. Starting twice used to spin up a second thread that bound
+        # the same path, unlinked the first server's socket out from under it,
+        # and left both fighting over connections -- which presented as clients
+        # intermittently getting no reply, on every platform. A second start is
+        # a caller error, but one that must not corrupt a running server.
+        if self._thread is not None and self._thread.is_alive():
+            return
         self._error: BaseException | None = None
         self._thread = threading.Thread(
             target=self._serve, name="cl-aid", daemon=True
@@ -264,12 +271,15 @@ class Server:
     def _serve_unix(self) -> None:
         path = Path(self.endpoint)
         _check_unix_path_length(str(path))
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # 0700 on the directory and 0600 on the socket: this carries the user's
-        # command line, and on a shared machine the default umask is not
-        # sufficient protection.
-        with contextlib.suppress(OSError):
-            os.chmod(path.parent, 0o700)
+        # Only tighten a directory we created ourselves. The previous version
+        # chmod'd the parent unconditionally, which for an endpoint directly
+        # under /tmp meant trying to make the machine's shared temp directory
+        # 0700 -- it failed harmlessly as an unprivileged user, but it was an
+        # attempt to reconfigure something we do not own.
+        if not path.parent.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with contextlib.suppress(OSError):
+                os.chmod(path.parent, 0o700)
         with contextlib.suppress(OSError):
             os.unlink(path)     # a stale socket from a crashed daemon
 

@@ -61,6 +61,15 @@ def endpoint(tmp_path):
 
 
 def serve(handler, endpoint) -> Server:
+    """Return a *started* server.
+
+    It does not start it a second time when used as a context manager --
+    Server.start() is idempotent now, but this helper previously relied on that
+    not mattering and it very much did: the `with` re-entered start(), a second
+    thread bound the same path and unlinked the first socket, and clients
+    intermittently got nothing back. That was the real cause of the flakiness
+    chased across several commits.
+    """
     server = Server(handler, endpoint)
     server.start()
     return server

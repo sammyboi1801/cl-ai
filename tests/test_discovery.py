@@ -349,6 +349,15 @@ def test_pathext_without_a_leading_dot_is_normalised():
     """
     assert discovery._pathext({"PATHEXT": "EXE;.BAT"}) == (".exe", ".bat")
     assert discovery._pathext({"PATHEXT": " .Com ; exe "}) == (".com", ".exe")
+
+
+@pytest.mark.skipif(not WINDOWS, reason="PATHEXT only governs naming on Windows")
+def test_extension_matching_is_a_suffix_test_not_a_substring_test():
+    """The consequence of the bug above, asserted on the platform it affects.
+
+    On POSIX _invocable_name returns the filename unchanged, because there is
+    no PATHEXT there -- so this assertion only means anything on Windows.
+    """
     assert discovery._invocable_name("someexe", (".exe",)) is None
     assert discovery._invocable_name("some.exe", (".exe",)) == "some"
 
