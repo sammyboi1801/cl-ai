@@ -1,0 +1,38 @@
+[project]
+name = "cl-ai"
+version = "0.1.0.dev0"
+description = "Natural-language command completion for your shell. Tab, cycle, run."
+requires-python = ">=3.10"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+
+# The core is deliberately dependency-light: it is imported by a daemon that
+# has to start fast, and every dependency is startup cost.
+dependencies = []
+
+[project.optional-dependencies]
+# The default planner. Kept optional so the LLM stays swappable in packaging,
+# not just in the type system.
+needle = ["cactus-needle>=3.0.1"]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+cl-ai = "cl_ai.cli:main"
+cl-aid = "cl_ai.daemon.server:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# The shell adapters ship as data files and are installed by `cl-ai init`.
+"cl_ai.shell" = ["powershell/*", "zsh/*", "bash/*", "fish/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
