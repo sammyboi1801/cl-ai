@@ -92,7 +92,7 @@ class ShellProfile:
         return self.quote_style in (QuoteStyle.POSIX, QuoteStyle.FISH)
 
 
-_POSIX_BUILTINS = MappingProxyType({})
+_POSIX_BUILTINS: Mapping[str, str] = MappingProxyType({})
 _PS_BUILTINS = MappingProxyType({
     "ls": "Get-ChildItem",
     "grep": "Select-String",
@@ -247,7 +247,7 @@ def is_available(shell_id: str) -> bool:
     return resolve_executable(shell_id) is not None
 
 
-def detect(env: dict | None = None) -> ShellProfile:
+def detect(env: Mapping[str, str] | None = None) -> ShellProfile:
     """Best-effort detection of the current shell.
 
     Deliberately conservative: we would rather return a POSIX profile we are
@@ -255,10 +255,12 @@ def detect(env: dict | None = None) -> ShellProfile:
     The caller can always override -- and the shell adapter, which knows
     exactly what it is, always does.
     """
-    env = os.environ if env is None else env
+    # Bound to a separate name rather than rebinding the parameter, whose
+    # declared type is narrower: os.environ is an _Environ, not a dict.
+    source: Mapping[str, str] = os.environ if env is None else env
 
     # An explicit override always wins.
-    forced = env.get("CL_AI_SHELL")
+    forced = source.get("CL_AI_SHELL")
     if forced:
         # Silently ignoring a typo here would hand the user a wrong shell and a
         # wrong quoter, which is exactly the class of failure this module is
@@ -266,21 +268,21 @@ def detect(env: dict | None = None) -> ShellProfile:
         return get_profile(forced)
 
     # PowerShell exports these; nothing else does.
-    if env.get("PSModulePath"):
+    if source.get("PSModulePath"):
         # PowerShell 7+ sets PSEdition=Core, Windows PowerShell 5.1 does not.
-        if env.get("PSEdition") == "Core" or env.get("POWERSHELL_DISTRIBUTION_CHANNEL"):
+        if source.get("PSEdition") == "Core" or source.get("POWERSHELL_DISTRIBUTION_CHANNEL"):
             return PROFILES["pwsh"]
         return PROFILES["powershell"]
 
     # POSIX shells export SHELL with a path to the binary.
-    shell_path = env.get("SHELL", "")
+    shell_path = source.get("SHELL", "")
     if shell_path:
         name = os.path.basename(shell_path).lower().removesuffix(".exe")
         if name in PROFILES:
             return PROFILES[name]
 
     # cmd.exe sets COMSPEC and, unlike PowerShell, no PSModulePath.
-    if env.get("COMSPEC") and os.name == "nt":
+    if source.get("COMSPEC") and os.name == "nt":
         return PROFILES["cmd"]
 
     return PROFILES["bash"]

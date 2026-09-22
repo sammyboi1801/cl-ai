@@ -80,3 +80,21 @@ jobs:
           python-version: "3.13"
       - run: python -m pip install ruff
       - run: ruff check src tests
+
+  types:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install mypy
+
+      # Checked once per target platform, on one runner, because the
+      # platform-dependent thing here is the TYPE STUBS, not the interpreter.
+      # socket.AF_UNIX is absent from the Windows typeshed and present in the
+      # POSIX one, so a single run would leave one of the two transports
+      # unverified -- and that is precisely where the platform branches live.
+      - run: mypy --platform linux
+      - run: mypy --platform darwin
+      - run: mypy --platform win32

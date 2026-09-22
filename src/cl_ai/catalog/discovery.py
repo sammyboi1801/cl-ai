@@ -345,6 +345,8 @@ def discover(
                 continue
 
             is_stub = _is_app_exec_alias(item.path)
+            size: int | None
+            mtime_ns: int | None
             try:
                 st = item.stat()
                 size, mtime_ns = st.st_size, st.st_mtime_ns

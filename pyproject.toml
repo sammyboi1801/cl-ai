@@ -14,7 +14,7 @@ dependencies = []
 # The default planner. Kept optional so the LLM stays swappable in packaging,
 # not just in the type system.
 needle = ["cactus-needle>=3.0.1"]
-dev = ["pytest", "hypothesis", "ruff"]
+dev = ["pytest", "hypothesis", "ruff", "mypy"]
 
 [project.scripts]
 cl-ai = "cl_ai.cli:main"
@@ -39,3 +39,23 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
+
+[tool.mypy]
+# Strict, because the package ships py.typed. That marker tells a consumer's
+# type checker to trust these annotations inside their own project, so an
+# unchecked annotation here is not a private style matter -- it is a claim we
+# make to every installer. Without this gate the hints were decoration.
+strict = true
+# The floor declared in requires-python. Checking under the OLDEST supported
+# interpreter is the point: newer syntax that 3.10 cannot parse is exactly the
+# breakage a developer on 3.13 will not notice.
+python_version = "3.10"
+files = ["src"]
+
+# Tests are deliberately excluded. A transitively installed third-party stub
+# (numpy, via hypothesis) fails to parse under the 3.10 target, and that has
+# nothing to do with our code. src is the surface py.typed advertises.
+
+[[tool.mypy.overrides]]
+module = ["cactus_needle.*"]
+ignore_missing_imports = true

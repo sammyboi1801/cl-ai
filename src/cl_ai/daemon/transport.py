@@ -18,6 +18,7 @@ import contextlib
 import logging
 import os
 import socket
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -130,6 +131,13 @@ def request(
 
 
 def _request_unix(payload: bytes, endpoint: str, deadline: float) -> bytes | None:
+    # The guard is written against sys.platform rather than the WINDOWS
+    # constant so a type checker narrows it too: socket.AF_UNIX does not exist
+    # in the Windows typeshed stubs, and previously only a comment said this
+    # path was POSIX-only. Now calling it on Windows returns "no daemon"
+    # instead of raising AttributeError from inside the transport.
+    if sys.platform == "win32":  # pragma: no cover - POSIX-only path
+        return None
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         return None
@@ -247,7 +255,7 @@ class Server:
         self.start()
         return self
 
-    def __exit__(self, *_exc) -> None:
+    def __exit__(self, *_exc: object) -> None:
         self.stop()
 
     # -- internals --------------------------------------------------------
@@ -279,6 +287,15 @@ class Server:
             log.error("serve loop failed on %s: %s", self.endpoint, exc)
 
     def _serve_unix(self) -> None:
+        # Same sys.platform guard as _request_unix, for the same reason -- but
+        # here the right answer is to fail loudly. A server that cannot bind
+        # its endpoint has no useful degraded mode, and a clear message beats
+        # an AttributeError surfacing from the socket module.
+        if sys.platform == "win32":  # pragma: no cover - POSIX-only path
+            raise RuntimeError(
+                "unix-domain sockets are unavailable on Windows; "
+                "the loopback transport should have been selected"
+            )
         path = Path(self.endpoint)
         _check_unix_path_length(str(path))
         # Only tighten a directory we created ourselves. The previous version

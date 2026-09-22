@@ -164,7 +164,7 @@ class Plan:
     #: The backend's untouched response, for debugging only. Excluded from
     #: hashing (it is a dict) and from equality (two plans that differ only in
     #: provider noise are the same suggestion to a user cycling the list).
-    raw: dict | None = field(default=None, compare=False)
+    raw: dict[str, Any] | None = field(default=None, compare=False)
 
     @property
     def is_empty(self) -> bool:

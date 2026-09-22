@@ -112,7 +112,7 @@ def encode(message: Request | Response) -> bytes:
     return raw
 
 
-def _coerce(cls, payload: dict) -> dict:
+def _coerce(cls: type[Any], payload: dict[str, Any]) -> dict[str, Any]:
     """Keep only fields the dataclass declares, and fix up enums.
 
     Dropping unknown keys is what lets an old widget talk to a new daemon.
@@ -163,7 +163,7 @@ def decode_response(raw: bytes | str) -> Response:
         raise ProtocolError(str(exc)) from exc
 
 
-def _parse(raw: bytes | str) -> dict:
+def _parse(raw: bytes | str) -> dict[str, Any]:
     if isinstance(raw, bytes):
         if len(raw) > MAX_LINE_BYTES:
             raise ProtocolError("message exceeds the size limit")
