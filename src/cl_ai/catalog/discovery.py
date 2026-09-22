@@ -189,8 +189,13 @@ def _pathext(env: Mapping[str, str]) -> tuple[str, ...]:
     thing that happens rather than a thing that cannot.
     """
     raw = env.get("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    # Always ';', never os.pathsep. PATHEXT is a Windows concept and is
+    # semicolon-separated by definition, but os.pathsep is ':' on POSIX -- so
+    # splitting on it made the whole variable parse as a single extension when
+    # the tests ran on Linux. Caught by CI, invisible on the machine it was
+    # written on.
     exts = []
-    for entry in raw.split(os.pathsep):
+    for entry in raw.split(";"):
         cleaned = entry.strip().lower()
         if not cleaned:
             continue

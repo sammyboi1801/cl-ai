@@ -49,7 +49,14 @@ function Get-ClAiPortFile {
         $Endpoint = "\\.\pipe\cl-ai-$safeUser"
     }
     $safe = ($Endpoint.ToCharArray() | Where-Object { $_ -match '[\w-]' }) -join ''
-    Join-Path $env:TEMP "$safe.port"
+    # $env:TEMP is a Windows variable and is unset under pwsh on Linux and
+    # macOS, where Join-Path then throws. Mirror the Python side's fallback
+    # exactly, or the two disagree about where the port file lives and the
+    # widget silently never finds the daemon.
+    $tempDir = $env:TEMP
+    if (-not $tempDir) { $tempDir = $env:TMPDIR }
+    if (-not $tempDir) { $tempDir = '/tmp' }
+    Join-Path $tempDir "$safe.port"
 }
 
 function Invoke-ClAiRequest {

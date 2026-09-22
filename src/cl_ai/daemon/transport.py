@@ -56,6 +56,22 @@ def default_endpoint(user: str | None = None) -> str:
     return str(Path(base) / f"cl-ai-{user}.sock")
 
 
+#: sockaddr_un.sun_path is a fixed-size char array: 108 bytes on Linux, 104 on
+#: macOS and the BSDs. Exceed it and bind() fails with a message that says
+#: nothing about length. macOS makes this easy to hit without trying, because
+#: TMPDIR there is a long per-session path under /private/var/folders.
+_SUN_PATH_MAX = 100
+
+
+def _check_unix_path_length(path: str) -> None:
+    encoded = len(path.encode("utf-8"))
+    if encoded > _SUN_PATH_MAX:
+        raise OSError(
+            f"socket path is {encoded} bytes, over the ~{_SUN_PATH_MAX} byte "
+            f"limit for a unix domain socket on this platform: {path}"
+        )
+
+
 def _current_user() -> str:
     for var in ("USER", "USERNAME", "LOGNAME"):
         value = os.environ.get(var)
@@ -98,10 +114,16 @@ def request(
                 raw = _request_unix(payload, endpoint, deadline)
             if raw is not None:
                 return decode_response(raw)
-        except ConnectionError:
-            pass                      # transient by definition; retry once
-        except (OSError, ProtocolError, ValueError):
-            return None
+        except ProtocolError:
+            return None               # a reply we cannot read will not improve
+        except OSError:
+            # Connect and read failures are retried once. Refused, reset,
+            # missing socket file, a listener mid-restart -- none of these
+            # distinguish "no daemon" from "bad timing", and one cheap retry
+            # inside the existing deadline resolves the second without
+            # delaying the first, because a genuine absence fails instantly.
+            if attempt == 1:
+                return None
         if attempt == 0:
             time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
     return None
@@ -186,11 +208,19 @@ class Server:
     # -- lifecycle --------------------------------------------------------
 
     def start(self) -> None:
+        self._error: BaseException | None = None
         self._thread = threading.Thread(
             target=self._serve, name="cl-aid", daemon=True
         )
         self._thread.start()
         if not self._ready.wait(timeout=5):
+            # Surface what actually went wrong. "did not come up" on its own
+            # sent us hunting for a race when the real cause was a socket path
+            # over the length limit -- the error was there, just discarded.
+            if self._error is not None:
+                raise RuntimeError(
+                    f"server failed to bind {self.endpoint}: {self._error}"
+                ) from self._error
             raise RuntimeError(f"server did not come up on {self.endpoint}")
 
     def stop(self) -> None:
@@ -221,13 +251,19 @@ class Server:
                 os.unlink(self.endpoint)
 
     def _serve(self) -> None:
-        if WINDOWS:
-            self._serve_pipe()
-        else:
-            self._serve_unix()
+        try:
+            if WINDOWS:
+                self._serve_pipe()
+            else:
+                self._serve_unix()
+        except BaseException as exc:      # noqa: BLE001 - reported via start()
+            self._error = exc
+            self._ready.set()             # unblock start(), which re-raises
+            log.error("serve loop failed on %s: %s", self.endpoint, exc)
 
     def _serve_unix(self) -> None:
         path = Path(self.endpoint)
+        _check_unix_path_length(str(path))
         path.parent.mkdir(parents=True, exist_ok=True)
         # 0700 on the directory and 0600 on the socket: this carries the user's
         # command line, and on a shared machine the default umask is not
@@ -360,9 +396,15 @@ class Server:
 
 
 def port_file_for(endpoint: str) -> str:
-    """Companion file holding the loopback port, for the Windows stand-in."""
+    """Companion file holding the loopback port, for the Windows stand-in.
+
+    The PowerShell widget computes this independently; the two must agree
+    exactly or it never finds the daemon. Keep the fallback order in step with
+    Get-ClAiPortFile in cl-ai.psm1.
+    """
     safe = "".join(c for c in endpoint if c.isalnum() or c in "-_")
-    return str(Path(os.environ.get("TEMP", "/tmp")) / f"{safe}.port")
+    temp = os.environ.get("TEMP") or os.environ.get("TMPDIR") or "/tmp"
+    return str(Path(temp) / f"{safe}.port")
 
 
 def _bad_request(detail: str) -> Response:

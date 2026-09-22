@@ -10,7 +10,10 @@ So most of what follows deliberately breaks things.
 
 from __future__ import annotations
 
+import contextlib
+import itertools
 import os
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -33,13 +36,28 @@ from cl_ai.daemon.transport import Server, default_endpoint, request
 WINDOWS = os.name == "nt"
 
 
+_counter = itertools.count()
+
+
 @pytest.fixture
 def endpoint(tmp_path):
     """A private endpoint per test, so tests never collide with each other or
-    with a daemon the developer happens to be running."""
+    with a daemon the developer happens to be running.
+
+    Deliberately NOT under tmp_path on POSIX. A unix socket path must fit in
+    sockaddr_un.sun_path -- 104 bytes on macOS -- and pytest's tmp_path there
+    sits under a long per-session /private/var/folders/... TMPDIR that blows
+    the limit on its own. That took out every socket test on the macOS runner.
+    """
     if WINDOWS:
-        return str(tmp_path / f"cl-ai-test-{os.getpid()}-{threading.get_ident()}")
-    return str(tmp_path / "s.sock")
+        yield str(tmp_path / f"cl-ai-test-{os.getpid()}-{next(_counter)}")
+        return
+    short = Path(tempfile.gettempdir()) / f"clai{os.getpid()}-{next(_counter)}.s"
+    try:
+        yield str(short)
+    finally:
+        with contextlib.suppress(OSError):
+            short.unlink()
 
 
 def serve(handler, endpoint) -> Server:
