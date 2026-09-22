@@ -20,22 +20,25 @@ from cl_ai.cli import BROKEN, DEGRADED, OK, Check, build_parser, main
 
 
 def test_every_declared_console_script_resolves() -> None:
-    """Parsed out of pyproject rather than hardcoded, so adding a script
-    without a target fails here instead of on a user's machine."""
-    import importlib
+    """Read from the INSTALLED distribution, not from pyproject.
 
-    import tomllib
+    Two reasons. It is the stronger check -- what matters is the entry point
+    the wheel actually exposes, since that is what `cl-ai` on PATH invokes --
+    and parsing pyproject needs tomllib, which is 3.11+. The first version of
+    this test did exactly that and broke the py3.10 job, which is the
+    declared floor and exists for precisely this kind of mistake.
 
-    root = Path(__file__).resolve().parents[1]
-    config = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
-    scripts = config["project"]["scripts"]
+    `ep.load()` rather than getattr, because that is the machinery a console
+    script uses: this fails in the same way the shipped binary would.
+    """
+    from importlib.metadata import distribution
+
+    scripts = [
+        ep for ep in distribution("cl-ai").entry_points if ep.group == "console_scripts"
+    ]
     assert scripts, "no console scripts declared"
-
-    for name, target in scripts.items():
-        module_name, _, attribute = target.partition(":")
-        module = importlib.import_module(module_name)
-        entry = getattr(module, attribute, None)
-        assert callable(entry), f"{name} -> {target} is not callable"
+    for entry in scripts:
+        assert callable(entry.load()), f"{entry.name} -> {entry.value}"
 
 
 def test_the_bare_command_prints_help_and_succeeds(capsys) -> None:
