@@ -66,7 +66,7 @@ def document_text(tool: Tool) -> str:
     flag soup of a command line instead puts the document in a different region
     of the space from every query that could match it.
     """
-    parts = [" ".join((tool.binary, *tool.path))]
+    parts = [tool.invocation]
     if tool.description:
         parts.append(tool.description)
     parts.extend(e.description for e in tool.examples if e.description)

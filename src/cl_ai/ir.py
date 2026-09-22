@@ -171,6 +171,17 @@ class Tool:
     provenance: Provenance | None = None
 
     @property
+    def invocation(self) -> str:
+        """How the command is actually typed: `git commit`, not `git_commit`.
+
+        `name` is an identifier and cannot be reversed into this -- a
+        subcommand may legitimately contain an underscore, so splitting on one
+        corrupts it. Derived here because retrieval and suggestion both need
+        it and had each rebuilt it inline.
+        """
+        return " ".join((self.binary, *self.path))
+
+    @property
     def schematized(self) -> bool:
         """False for a tool we know exists but cannot fill in.
 

@@ -141,9 +141,8 @@ def _document_for(tool: Tool) -> dict[str, str]:
     as `git_commit`) because a user types the latter and the catalog stores the
     former.
     """
-    invocation = " ".join((tool.binary, *tool.path))
     return {
-        "name": f"{tool.name} {invocation}",
+        "name": f"{tool.name} {tool.invocation}",
         "description": tool.description,
         # Joined with newlines so tokenisation cannot run two examples' words
         # together into a phantom term.
@@ -214,7 +213,7 @@ class ToolIndex:
 
         scored: list[tuple[float, int]] = []
         for doc_id, tool in enumerate(self.tools):
-            invocation = " ".join((tool.binary, *tool.path)).lower()
+            invocation = tool.invocation.lower()
             name = tool.name.lower()
             best = 0.0
             if invocation == joined or name == joined:
@@ -239,7 +238,7 @@ class ToolIndex:
             return frozenset()
         out = set()
         for doc_id, tool in enumerate(self.tools):
-            invocation = " ".join((tool.binary, *tool.path)).lower()
+            invocation = tool.invocation.lower()
             if invocation.startswith(joined) or tool.name.lower().startswith(joined):
                 out.add(doc_id)
         return frozenset(out)
@@ -404,7 +403,7 @@ class ToolIndex:
         # of the candidate the typed text covers, so `git com` prefers
         # `git commit` over the longer `git commit-graph`.
         lengths = {
-            doc_id: len(" ".join((self.tools[doc_id].binary, *self.tools[doc_id].path)))
+            doc_id: len(self.tools[doc_id].invocation)
             for _, _, doc_id in ranked
         }
         ranked.sort(

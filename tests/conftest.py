@@ -13,6 +13,9 @@ Off outside CI, where the normal pytest report is better.
 from __future__ import annotations
 
 import os
+from pathlib import Path
+
+import pytest
 
 _ON_CI = os.environ.get("GITHUB_ACTIONS") == "true"
 _MAX_ANNOTATIONS = 25          # GitHub renders at most ~50; leave headroom
@@ -67,3 +70,25 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
             by_shell[shell] = by_shell.get(shell, 0) + 1
         census = " ".join(f"{k}={v}" for k, v in sorted(by_shell.items()))
         print(f"::error title=failure census::{_escape(census)}")
+
+
+@pytest.fixture(scope="session")
+def corpus_tools():
+    """Every tool in the corpus, for invariants that only appear at scale.
+
+    Defaults to the committed fixtures so CI always exercises the invariant on
+    something, and widens to the full tldr checkout when CL_AI_TLDR_ROOT is
+    set. Ten pages cannot prove a corpus-wide property, but a check that only
+    runs on one developer's machine proves even less -- so it runs on both,
+    and the developer gets the version with teeth.
+    """
+    from cl_ai.catalog.extract.tldr import TldrSource
+    from cl_ai.catalog.normalize import normalize
+
+    root = os.environ.get("CL_AI_TLDR_ROOT")
+    source = TldrSource(
+        Path(root) if root else Path(__file__).parent / "fixtures" / "tldr"
+    )
+    if not source.available():
+        pytest.skip("no tldr corpus available")
+    return list(normalize(source.harvest()).tools)

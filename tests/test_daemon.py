@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import itertools
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -363,3 +364,171 @@ def test_end_to_end_latency_is_within_the_tab_budget(endpoint):
     median, worst = timings[len(timings) // 2], timings[-1]
     print(f"\n  round trip: median {median:.1f}ms  worst {worst:.1f}ms")
     assert median < 100, f"median {median:.1f}ms exceeds the Tab budget"
+
+
+# ------------------------------------------------- suggestions from the catalog
+#
+# Everything above this line exercises the degraded path -- an inventory with
+# no catalog -- which is what the daemon served before retrieval existed and
+# still serves during a cold start. These cover the real one.
+
+
+def catalog_daemon(*names: str) -> Daemon:
+    """A daemon warmed from the committed fixture corpus.
+
+    Fixtures rather than the machine's own catalog, because a test that builds
+    from PATH asserts things about whoever is running it.
+    """
+    from pathlib import Path as _Path
+
+    from cl_ai.catalog.extract.tldr import TldrSource
+    from cl_ai.catalog.normalize import normalize
+
+    source = TldrSource(_Path(__file__).parent / "fixtures" / "tldr")
+    if not source.available():
+        pytest.skip("fixture corpus missing")
+    daemon = Daemon()
+    daemon._catalog = normalize(source.harvest())
+    daemon._inventory = fake_inventory(*(names or ("git", "ls", "rm", "pacman")))
+    return daemon
+
+
+def test_a_suggestion_is_a_runnable_command_not_a_tool_name():
+    """The gap that made the old placeholder useless: `git_commit` is an
+    identifier. Pasting it into a shell fails."""
+    daemon = catalog_daemon()
+    reply = daemon.handle(
+        Request(buffer="commit staged files with a message", shell="bash", limit=3)
+    )
+    assert reply.suggestions, reply
+    command = reply.suggestions[0].command
+    assert command.startswith("git commit"), command
+    assert "_" not in command.split()[0]
+
+
+def test_the_example_matching_the_intent_is_chosen():
+    daemon = catalog_daemon()
+    reply = daemon.handle(
+        Request(buffer="commit staged files with a message", shell="bash", limit=1)
+    )
+    assert "--message" in reply.suggestions[0].command
+
+
+def test_a_prefix_query_completes_to_the_command():
+    """Tab semantics, which the substring fallback could not do: there is no
+    binary named `git com`."""
+    daemon = catalog_daemon()
+    reply = daemon.handle(Request(buffer="git com", shell="bash", limit=3))
+    assert reply.suggestions
+    assert reply.suggestions[0].command.startswith("git commit")
+
+
+def test_nonsense_returns_nothing_rather_than_a_neighbour():
+    """The score floor reaching the wire. A nearest-neighbour substitution is
+    how a missing tool becomes a confidently wrong command."""
+    daemon = catalog_daemon()
+    reply = daemon.handle(Request(buffer="zzqqxxyy plughhh", shell="bash"))
+    assert reply.ok is True
+    assert reply.suggestions == ()
+
+
+def test_destructive_tools_are_flagged_from_the_catalog():
+    """Capability tags, not the hardcoded name list -- `rm` is marked because
+    the catalog says so, and the list is only a widening safety net."""
+    daemon = catalog_daemon()
+    reply = daemon.handle(
+        Request(buffer="remove a directory recursively", shell="bash", limit=5)
+    )
+    assert reply.suggestions
+    assert any(s.dangerous for s in reply.suggestions), [
+        (s.command, s.dangerous) for s in reply.suggestions
+    ]
+
+
+def test_an_index_is_built_once_per_target():
+    daemon = catalog_daemon()
+    first = daemon.index_for("bash", "linux")
+    assert first is not None
+    assert daemon.index_for("bash", "linux") is first
+    assert daemon.index_for("powershell", "win32") is not first
+
+
+def test_no_index_without_a_catalog():
+    daemon = Daemon()
+    daemon._inventory = fake_inventory("git")
+    assert daemon.index_for("bash", "linux") is None
+
+
+def test_a_broken_catalog_degrades_to_name_completion():
+    """A catalog that cannot be indexed costs ranked suggestions, not Tab."""
+    daemon = Daemon()
+    daemon._inventory = fake_inventory("git", "github")
+
+    class Hostile:
+        def for_target(self, shell, os_name):
+            raise RuntimeError("catalog is on fire")
+
+    daemon._catalog = Hostile()  # type: ignore[assignment]
+    reply = daemon.handle(Request(buffer="git", shell="bash", limit=5))
+    assert reply.ok is True
+    assert next(s.command for s in reply.suggestions) == "git"
+
+
+def test_an_uninstalled_tool_is_never_suggested():
+    """$PATH is a hard gate, not a score. `pacman` is in the fixture corpus
+    and must not be offered on a machine without it."""
+    daemon = catalog_daemon("git", "ls")
+    reply = daemon.handle(Request(buffer="install a package", shell="bash", limit=5))
+    assert "pacman" not in " ".join(s.command for s in reply.suggestions)
+
+
+def test_the_catalog_build_failure_leaves_the_inventory_serving(monkeypatch):
+    """Two warm states, independently guarded."""
+    import cl_ai.daemon.server as server_module
+
+    def explode(**kwargs):
+        raise RuntimeError("no sources")
+
+    monkeypatch.setattr(server_module, "build", explode)
+    monkeypatch.setattr(
+        server_module, "discover", lambda: fake_inventory("git", "github")
+    )
+    daemon = Daemon()
+    daemon.warm(background=False)
+    assert daemon.inventory is not None
+    assert daemon.catalog is None
+    reply = daemon.handle(Request(buffer="git", shell="bash"))
+    assert next(s.command for s in reply.suggestions) == "git"
+
+
+def test_suggestions_stay_within_the_tab_budget_with_a_catalog():
+    """Retrieval sits behind a keystroke; a slow path is a hung prompt."""
+    daemon = catalog_daemon()
+    daemon.index_for("bash", "linux")          # exclude the one-off build
+    worst = 0.0
+    for query in (
+        "git com",
+        "commit staged files with a message",
+        "remove a directory recursively",
+        "install a package",
+        "zzqqxxyy",
+    ):
+        start = time.monotonic()
+        daemon.handle(Request(buffer=query, shell="bash", limit=5))
+        worst = max(worst, (time.monotonic() - start) * 1000)
+    assert worst < 250.0, f"slowest was {worst:.1f}ms"
+
+
+def test_the_handler_is_still_total_with_a_catalog():
+    daemon = catalog_daemon()
+
+    class Exploding:
+        def search(self, *a, **k):
+            raise RuntimeError("index is on fire")
+
+    # Keyed on the daemon's OWN platform, not one the request names: the
+    # widget is trusted about the shell and never about the OS.
+    daemon._indexes[(sys.platform, "bash")] = Exploding()  # type: ignore[assignment]
+    reply = daemon.handle(Request(buffer="anything", shell="bash"))
+    assert reply.ok is False
+    assert reply.error is ErrorCode.INTERNAL
