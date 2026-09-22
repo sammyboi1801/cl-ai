@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from cl_ai.platform_ import PROFILES, QuoteStyle, is_available
+from cl_ai.platform_ import PROFILES, is_available
 from cl_ai.render import quoting
 from cl_ai.render.quoting import QuotingError
 
@@ -153,9 +153,20 @@ def test_safe_values_are_not_needlessly_quoted():
     assert quoting.quote("HEAD~1", PROFILES["bash"]) != "HEAD~1"  # ~ expands
 
 
-def test_flaglike_values_are_quoted_in_powershell():
-    """A bare -Force would be parsed as a parameter, not a value."""
-    assert quoting.quote("-Force", PROFILES["powershell"]).startswith("'")
+@pytest.mark.parametrize("shell_id", ALL_SHELLS)
+@pytest.mark.parametrize("value", ["-Force", "--force", "-rf", "-"])
+def test_flaglike_values_are_quoted_everywhere(shell_id, value):
+    """Regression: POSIX left "--force" bare while PowerShell quoted it.
+
+    quote() is for VALUES -- the renderer emits flags itself. A bare leading
+    dash is read by the target program as an option rather than as data, so a
+    filename like "-rf" would silently become a flag. shlex.quote leaves these
+    bare, which is right for its purpose and wrong for ours; the original bug
+    was inheriting that behaviour on one platform only.
+    """
+    quoted = quoting.quote(value, PROFILES[shell_id])
+    assert quoted != value, f"{shell_id} left a flag-like value bare: {quoted!r}"
+    assert quoted[0] in "'\"", f"{shell_id} did not quote it: {quoted!r}"
 
 
 # -------------------------------------------------------------- oracle layer

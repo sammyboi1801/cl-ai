@@ -71,7 +71,12 @@ def quote_posix(value: str) -> str:
     _reject_control(value, "a POSIX shell")
     if value == "":
         return "''"
-    if _POSIX_SAFE.match(value):
+    # A leading dash must be quoted even though the characters are otherwise
+    # safe. quote() is for VALUES; the renderer emits flags itself. Left bare, a
+    # value like "--force" or "-rf" would be read by the target program as an
+    # option rather than as data. shlex.quote does leave these bare, which is
+    # correct for its purpose and wrong for ours.
+    if _POSIX_SAFE.match(value) and not value.startswith("-"):
         return value
     return "'" + value.replace("'", "'\\''") + "'"
 
@@ -119,7 +124,7 @@ def quote_cmd(value: str) -> str:
         )
     if value == "":
         return '""'
-    if _CMD_SAFE.match(value):
+    if _CMD_SAFE.match(value) and not value.startswith("-"):
         return value
     return '"' + value.replace('"', '""') + '"'
 
@@ -145,11 +150,6 @@ def quote(value: str, profile: ShellProfile) -> str:
     return _QUOTERS[profile.quote_style](value)
 
 
-def join(parts: list[str], profile: ShellProfile) -> str:
-    """Join already-quoted parts into one command string."""
-    return " ".join(parts)
-
-
 def quote_all(values: list[str], profile: ShellProfile) -> str:
     """Quote every value and join them. The normal entry point for renderers."""
-    return join([quote(v, profile) for v in values], profile)
+    return " ".join(quote(v, profile) for v in values)

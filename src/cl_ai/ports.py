@@ -16,7 +16,8 @@ agent caching, and embedding normalisation. None of that reaches core.
 
 from __future__ import annotations
 
-from typing import Protocol, Sequence, runtime_checkable
+from collections.abc import Sequence
+from typing import Protocol, runtime_checkable
 
 from .ir import Capabilities, Plan, PlanRequest
 

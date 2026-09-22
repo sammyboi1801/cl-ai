@@ -13,8 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional
-
+from typing import Any
 
 # --------------------------------------------------------------------------
 # Tool schemas (canonical dialect)
@@ -54,7 +53,7 @@ class Param:
     required: bool = False
     repeatable: bool = False
     default: Any = None
-    provenance: Optional[Provenance] = None
+    provenance: Provenance | None = None
 
 
 class Capability(str, Enum):
@@ -82,7 +81,7 @@ class Tool:
     capabilities: frozenset[Capability] = frozenset()
     platforms: frozenset[str] = frozenset()   # shell profile ids it renders to
     examples: tuple[str, ...] = ()
-    provenance: Optional[Provenance] = None
+    provenance: Provenance | None = None
 
     @property
     def schematized(self) -> bool:
@@ -125,7 +124,7 @@ class Step:
     tool: str
     arguments: dict[str, Any] = field(default_factory=dict)
     emits: StreamKind = StreamKind.NONE
-    join_to_next: Optional[Join] = None
+    join_to_next: Join | None = None
 
 
 @dataclass(frozen=True)
@@ -138,9 +137,9 @@ class Plan:
     """
     steps: tuple[Step, ...] = ()
     refused: bool = False
-    confidence: Optional[float] = None
-    reasoning: Optional[str] = None
-    raw: Optional[dict] = None
+    confidence: float | None = None
+    reasoning: str | None = None
+    raw: dict | None = None
 
     @property
     def is_empty(self) -> bool:

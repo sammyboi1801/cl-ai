@@ -32,7 +32,7 @@ class OracleUnavailable(RuntimeError):
 def _run(argv: list[str], cwd: Path) -> subprocess.CompletedProcess:
     return subprocess.run(
         argv, cwd=cwd, capture_output=True, timeout=TIMEOUT,
-        stdin=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL, check=False,
     )
 
 
@@ -83,7 +83,7 @@ def _posix_path(p: Path, shell: str = "bash") -> str:
                 test = f"{cand}{prest}/.oracle_probe"
                 r = subprocess.run([shell, "-c", f'test -f "{test}"'],
                                    capture_output=True, timeout=TIMEOUT,
-                                   stdin=subprocess.DEVNULL)
+                                   stdin=subprocess.DEVNULL, check=False)
                 if r.returncode == 0:
                     prefix = cand[: -len(pdrive)]   # "/mnt/", "/", "/cygdrive/"
                     break

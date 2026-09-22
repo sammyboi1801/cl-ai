@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import os
 import shutil
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from types import MappingProxyType
 
 
 class QuoteStyle(str, Enum):
@@ -55,7 +56,12 @@ class EnvSyntax(str, Enum):
 
 @dataclass(frozen=True)
 class ShellProfile:
-    """Everything platform-specific, resolved into one object."""
+    """Everything platform-specific, resolved into one object.
+
+    Hashable, so it can be used as a cache key -- the daemon keys warm state by
+    profile. That is why `builtin_map` is excluded from comparison: a dict field
+    would make the whole dataclass unhashable despite frozen=True.
+    """
 
     id: str
     quote_style: QuoteStyle
@@ -67,19 +73,19 @@ class ShellProfile:
     #: Command used to run a single command string, e.g. ("bash", "-c").
     exec_flags: tuple[str, ...] = ()
     #: Shell-native names for common operations, for tools that have no binary.
-    builtin_map: dict[str, str] = None  # type: ignore[assignment]
-
-    def __post_init__(self) -> None:
-        if self.builtin_map is None:
-            object.__setattr__(self, "builtin_map", {})
+    #: Read-only: profiles share these tables, so a plain dict would let a write
+    #: through one profile silently alter every other profile that shares it.
+    builtin_map: Mapping[str, str] = field(
+        default_factory=lambda: MappingProxyType({}), compare=False
+    )
 
     @property
     def is_posix_like(self) -> bool:
         return self.quote_style is QuoteStyle.POSIX
 
 
-_POSIX_BUILTINS: dict[str, str] = {}
-_PS_BUILTINS = {
+_POSIX_BUILTINS = MappingProxyType({})
+_PS_BUILTINS = MappingProxyType({
     "ls": "Get-ChildItem",
     "grep": "Select-String",
     "cat": "Get-Content",
@@ -90,8 +96,8 @@ _PS_BUILTINS = {
     "kill": "Stop-Process",
     "pwd": "Get-Location",
     "which": "Get-Command",
-}
-_CMD_BUILTINS = {
+})
+_CMD_BUILTINS = MappingProxyType({
     "ls": "dir",
     "cat": "type",
     "cp": "copy",
@@ -101,7 +107,7 @@ _CMD_BUILTINS = {
     "kill": "taskkill",
     "pwd": "cd",
     "which": "where",
-}
+})
 
 
 PROFILES: dict[str, ShellProfile] = {
@@ -171,7 +177,7 @@ def is_available(shell_id: str) -> bool:
     return shutil.which(profile.exec_flags[0]) is not None
 
 
-def detect(env: Optional[dict] = None) -> ShellProfile:
+def detect(env: dict | None = None) -> ShellProfile:
     """Best-effort detection of the current shell.
 
     Deliberately conservative: we would rather return a POSIX profile we are
@@ -183,8 +189,11 @@ def detect(env: Optional[dict] = None) -> ShellProfile:
 
     # An explicit override always wins.
     forced = env.get("CL_AI_SHELL")
-    if forced and forced in PROFILES:
-        return PROFILES[forced]
+    if forced:
+        # Silently ignoring a typo here would hand the user a wrong shell and a
+        # wrong quoter, which is exactly the class of failure this module is
+        # meant to prevent. Fail loudly instead.
+        return get_profile(forced)
 
     # PowerShell exports these; nothing else does.
     if env.get("PSModulePath"):
