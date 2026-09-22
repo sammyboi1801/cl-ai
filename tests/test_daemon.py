@@ -209,7 +209,14 @@ def test_server_stops_cleanly_and_releases_the_endpoint(endpoint):
     assert request(Request(kind=Kind.PING), endpoint, timeout_s=5) is not None
     server.stop()
     assert request(Request(kind=Kind.PING), endpoint, timeout_s=0.3) is None
-    if not WINDOWS:
+
+    # Leftovers are not cosmetic: a stale socket blocks the next bind, and a
+    # stale port file points the next client at a dead port. The Windows half
+    # of this was missing and a single test run orphaned 580 files in %TEMP%.
+    if WINDOWS:
+        assert not os.path.exists(transport.port_file_for(endpoint)), \
+            "stale port file left behind"
+    else:
         assert not os.path.exists(endpoint), "stale socket left behind"
 
 

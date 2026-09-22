@@ -253,7 +253,17 @@ class Server:
     # -- internals --------------------------------------------------------
 
     def _cleanup(self) -> None:
-        if not WINDOWS:
+        """Remove whatever the listener left in the filesystem.
+
+        Both branches matter. POSIX leaves a socket file that would otherwise
+        block the next bind; the Windows stand-in leaves a port file that would
+        otherwise point the next client at a dead port. The Windows half was
+        missing, and a single test run left 580 orphaned files in %TEMP%.
+        """
+        if WINDOWS:
+            with contextlib.suppress(OSError):
+                os.unlink(self._port_file())
+        else:
             with contextlib.suppress(OSError):
                 os.unlink(self.endpoint)
 
