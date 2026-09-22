@@ -30,6 +30,9 @@ where = ["src"]
 [tool.setuptools.package-data]
 # The shell adapters ship as data files and are installed by `cl-ai init`.
 "cl_ai.shell" = ["powershell/*", "zsh/*", "bash/*", "fish/*"]
+# Without this marker, type checkers ignore our annotations in a consumer's
+# project -- the hints exist but are invisible where they would be useful.
+"cl_ai" = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

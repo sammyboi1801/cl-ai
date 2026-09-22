@@ -1,0 +1,23 @@
+# Normalise to LF in the repository.
+* text=auto eol=lf
+
+# These are executed by a shell, and CRLF breaks them outright: a POSIX shell
+# reads the carriage return as part of the command and reports "not found".
+# The shell widgets are the whole product surface on those platforms, so this
+# is not a style preference.
+*.sh   text eol=lf
+*.bash text eol=lf
+*.zsh  text eol=lf
+*.fish text eol=lf
+
+# PowerShell 5.1 is happier with CRLF, and cmd genuinely requires it.
+*.ps1  text eol=crlf
+*.psm1 text eol=crlf
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+
+# Never touched.
+*.png  binary
+*.cact binary
+*.pkl  binary
+*.safetensors binary

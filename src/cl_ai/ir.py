@@ -11,8 +11,10 @@ Nothing here imports a backend, a shell, or a model. Pure data.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
+from types import MappingProxyType
 from typing import Any
 
 # --------------------------------------------------------------------------
@@ -121,10 +123,30 @@ class Join(str, Enum):
 
 @dataclass(frozen=True)
 class Step:
+    """One command in a plan.
+
+    `arguments` is a read-only mapping and is excluded from __hash__ while
+    remaining part of __eq__. Both halves matter: frozen=True protects the
+    field binding but not a dict behind it, so a plain dict would let callers
+    mutate a "frozen" Step; and a dict field would make Step unhashable, which
+    breaks deduplicating candidates -- at runtime, in the assembler, rather
+    than here. Equal Steps still hash equal; unequal ones may collide, which is
+    permitted and cheap at these sizes.
+    """
+
     tool: str
-    arguments: dict[str, Any] = field(default_factory=dict)
+    arguments: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}), hash=False
+    )
     emits: StreamKind = StreamKind.NONE
     join_to_next: Join | None = None
+
+    def __post_init__(self) -> None:
+        # Callers pass ordinary dicts; wrap so the promise of frozen holds.
+        if not isinstance(self.arguments, MappingProxyType):
+            object.__setattr__(
+                self, "arguments", MappingProxyType(dict(self.arguments))
+            )
 
 
 @dataclass(frozen=True)
@@ -139,7 +161,10 @@ class Plan:
     refused: bool = False
     confidence: float | None = None
     reasoning: str | None = None
-    raw: dict | None = None
+    #: The backend's untouched response, for debugging only. Excluded from
+    #: hashing (it is a dict) and from equality (two plans that differ only in
+    #: provider noise are the same suggestion to a user cycling the list).
+    raw: dict | None = field(default=None, compare=False)
 
     @property
     def is_empty(self) -> bool:
