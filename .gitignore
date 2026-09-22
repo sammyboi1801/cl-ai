@@ -8,3 +8,5 @@ dist/
 tests/.oracle_work/
 tests/.oracle_probe
 .venv/
+tests/.hypothesis/
+.hypothesis/

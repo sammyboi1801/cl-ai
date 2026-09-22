@@ -34,15 +34,22 @@ class QuotingError(ValueError):
 # Note the omissions, each deliberate:
 #   ~  home expansion            *?[  globbing
 #   !  history expansion         ^   csh-era negation
-_POSIX_SAFE = re.compile(r"^[\w@%+=:,./-]+$", re.ASCII)
+#
+# Anchor with \Z, never with $. In Python, `$` also matches immediately before
+# a trailing newline, so `^[\w]+$` happily accepts a value ending in one. That
+# value would then be emitted BARE, the unquoted newline would terminate the
+# command, and anything the renderer appended became a second command -- a
+# command injection. Found by the property tests on their first run; the whole
+# family of anchors below is \Z for this reason.
+_POSIX_SAFE = re.compile(r"^[\w@%+=:,./-]+\Z", re.ASCII)
 
 # PowerShell's bare-word rules are stricter than POSIX's in practice: `,` and
 # `%` are operators/aliases, `@` starts a splat or array, `:` can form a drive
 # or scope reference, `.` is safe only mid-token.
-_PS_SAFE = re.compile(r"^[\w/=+-]+$", re.ASCII)
+_PS_SAFE = re.compile(r"^[\w/=+-]+\Z", re.ASCII)
 
 # cmd.exe: anything beyond this gets wrapped, and several things get refused.
-_CMD_SAFE = re.compile(r"^[\w@+=:,./-]+$", re.ASCII)
+_CMD_SAFE = re.compile(r"^[\w@+=:,./-]+\Z", re.ASCII)
 
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 

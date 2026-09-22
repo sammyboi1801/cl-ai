@@ -1,0 +1,82 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.13"]
+        include:
+          # One older interpreter, on the cheapest runner, to hold the floor
+          # declared in pyproject (requires-python >= 3.10).
+          - os: ubuntu-latest
+            python: "3.10"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # --- shells under test -------------------------------------------------
+      # The point of this matrix is the shells, not the OSes. Every profile
+      # cl_ai claims to support must be executed somewhere.
+
+      - name: Install shells (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsh fish
+
+      - name: Install shells (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install fish
+          # zsh is the system default; bash here is 3.2 from 2007, which is a
+          # genuinely different interpreter from the bash 5.x on Linux and is
+          # part of why this runner is worth the minutes.
+
+      # Windows runners already carry powershell 5.1, pwsh 7, cmd, and Git Bash.
+
+      - name: Install package
+        run: python -m pip install -e ".[dev]"
+
+      - name: Report which shells are actually present
+        shell: bash
+        run: python -m tests.report_shells
+
+      # A skipped test reads as a pass, and that is precisely how the gap this
+      # matrix exists to close went unnoticed locally. If a shell this runner is
+      # supposed to cover is missing, fail instead of quietly skipping it.
+      - name: Enforce shell coverage
+        env:
+          CL_AI_REQUIRED_SHELLS: ${{ runner.os == 'Windows' && 'bash,powershell,pwsh,cmd' || 'bash,zsh,fish,pwsh' }}
+        run: python -m pytest tests/test_shell_coverage.py -q
+
+      - name: Run tests
+        env:
+          CL_AI_REQUIRED_SHELLS: ${{ runner.os == 'Windows' && 'bash,powershell,pwsh,cmd' || 'bash,zsh,fish,pwsh' }}
+        run: python -m pytest -q -rxs
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install ruff
+      - run: ruff check src tests

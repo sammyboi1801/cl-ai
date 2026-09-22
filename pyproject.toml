@@ -14,7 +14,7 @@ dependencies = []
 # The default planner. Kept optional so the LLM stays swappable in packaging,
 # not just in the type system.
 needle = ["cactus-needle>=3.0.1"]
-dev = ["pytest", "ruff"]
+dev = ["pytest", "hypothesis", "ruff"]
 
 [project.scripts]
 cl-ai = "cl_ai.cli:main"
