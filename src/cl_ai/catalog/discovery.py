@@ -37,6 +37,7 @@ import time
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
+from functools import cached_property
 from types import MappingProxyType
 
 from ..platform_ import ShellProfile, detect
@@ -89,6 +90,16 @@ _BUILTINS: Mapping[str, frozenset[str]] = MappingProxyType({
         "setlocal", "shift", "start", "time", "title", "type", "ver", "vol",
     }),
 })
+
+
+def _fold(name: str) -> str:
+    """Case-fold a command name where the platform does.
+
+    Windows command lookup is case-insensitive, POSIX is not. Getting this
+    backwards makes `Git` and `git` either two commands or one, on the wrong
+    platform.
+    """
+    return name.lower() if os.name == "nt" else name
 
 
 class EntryKind(str, Enum):
@@ -146,29 +157,45 @@ class Inventory:
     duration_s: float = 0.0
     truncated: bool = False
 
-    @property
+    # Computed once per inventory rather than per access. These sit on the Tab
+    # path, where the whole budget is ~100ms; recomputing over ~1300 entries
+    # each time is not a crisis (0.14ms measured) but it is pure waste, and an
+    # Inventory is immutable so caching is always correct. cached_property
+    # writes through __dict__, which a frozen dataclass still has.
+    @cached_property
     def usable(self) -> tuple[Discovered, ...]:
         return tuple(e for e in self.entries if e.usable)
 
-    @property
+    @cached_property
     def names(self) -> frozenset[str]:
         """The hard gate the context engine applies: never suggest what is
         not installed."""
         return frozenset(e.name for e in self.entries if e.usable)
 
+    @cached_property
+    def _by_name(self) -> Mapping[str, Discovered]:
+        return MappingProxyType({_fold(e.name): e for e in reversed(self.entries)})
+
     def get(self, name: str) -> Discovered | None:
-        key = name.lower() if os.name == "nt" else name
-        for entry in self.entries:
-            candidate = entry.name.lower() if os.name == "nt" else entry.name
-            if candidate == key:
-                return entry
-        return None
+        return self._by_name.get(_fold(name))
 
 
 def _pathext(env: Mapping[str, str]) -> tuple[str, ...]:
-    """Extensions Windows considers executable, lowercased, in PATH order."""
+    """Extensions Windows considers executable, lowercased, in PATHEXT order.
+
+    A leading dot is forced. Without it an entry like "EXE" turns the suffix
+    test into a substring test, and a file named `someexe` gets reported as
+    the command `some`. PATHEXT is user-writable, so a malformed entry is a
+    thing that happens rather than a thing that cannot.
+    """
     raw = env.get("PATHEXT", ".COM;.EXE;.BAT;.CMD")
-    return tuple(e.lower() for e in raw.split(os.pathsep) if e.strip())
+    exts = []
+    for entry in raw.split(os.pathsep):
+        cleaned = entry.strip().lower()
+        if not cleaned:
+            continue
+        exts.append(cleaned if cleaned.startswith(".") else "." + cleaned)
+    return tuple(exts)
 
 
 def _is_app_exec_alias(path: str) -> bool:

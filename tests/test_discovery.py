@@ -341,6 +341,45 @@ def test_iter_path_dirs_reports_order_and_reasons(tmp_path):
     assert results[2][1] is SkipReason.MISSING
 
 
+def test_pathext_without_a_leading_dot_is_normalised():
+    """Regression: PATHEXT is user-writable and entries can lack the dot.
+
+    Unnormalised, `endswith("exe")` is a substring test rather than a suffix
+    test, so a file named `someexe` was being reported as the command `some`.
+    """
+    assert discovery._pathext({"PATHEXT": "EXE;.BAT"}) == (".exe", ".bat")
+    assert discovery._pathext({"PATHEXT": " .Com ; exe "}) == (".com", ".exe")
+    assert discovery._invocable_name("someexe", (".exe",)) is None
+    assert discovery._invocable_name("some.exe", (".exe",)) == "some"
+
+
+def test_lookups_are_cached_and_stay_correct(tmp_path):
+    """These sit on the Tab path, where the whole budget is ~100ms.
+
+    Caching is safe only because an Inventory is immutable; the test checks
+    both that it is cached and that it still answers correctly.
+    """
+    make_exe(tmp_path, "cached.exe" if WINDOWS else "cached")
+    inv = discover(env_with(tmp_path), PROFILES["bash"])
+
+    assert inv.names is inv.names            # same object: computed once
+    assert inv.usable is inv.usable
+    assert inv.get("cached") is not None
+    assert inv.get("definitely-absent") is None
+
+
+def test_get_returns_the_path_winner_not_a_shadowed_duplicate(tmp_path):
+    """The lookup index must agree with PATH order, like the scan does."""
+    first, second = tmp_path / "1", tmp_path / "2"
+    first.mkdir()
+    second.mkdir()
+    name = "dup.exe" if WINDOWS else "dup"
+    winner = make_exe(first, name)
+    make_exe(second, name)
+    inv = discover(env_with(first, second), PROFILES["bash"])
+    assert inv.get("dup").path == winner
+
+
 def test_names_is_the_hard_gate(tmp_path):
     make_exe(tmp_path, "present.exe" if WINDOWS else "present")
     inv = discover(env_with(tmp_path), PROFILES["bash"])
