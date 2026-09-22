@@ -200,7 +200,8 @@ def test_generated_values_survive_the_real_shell(shell_id, value):
     prefix=st.text(alphabet="abc-_. ", max_size=8),
 )
 @settings(max_examples=25, deadline=None,
-          suppress_health_check=[HealthCheck.function_scoped_fixture])
+          suppress_health_check=[HealthCheck.function_scoped_fixture,
+                                 HealthCheck.too_slow])
 def test_injection_never_executes(shell_id, payload, prefix):
     if not is_available(shell_id):
         pytest.skip(f"{shell_id} not installed here")

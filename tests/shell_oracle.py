@@ -14,6 +14,7 @@ quoting on Windows) that would make failures ambiguous.
 from __future__ import annotations
 
 import contextlib
+import os
 import shutil
 import subprocess
 import tempfile
@@ -139,8 +140,13 @@ def roundtrip(value: str, shell_id: str) -> str:
             )
             # Windows PowerShell 5.1 reads a .ps1 as ANSI unless it has a BOM.
             script.write_text(body, encoding="utf-8-sig", newline="\n")
-            proc = _run([profile.exec_flags[0], "-NoProfile", "-NonInteractive",
-                         "-ExecutionPolicy", "Bypass", "-File", str(script)], d)
+            argv = [profile.exec_flags[0], "-NoProfile", "-NonInteractive"]
+            # -ExecutionPolicy exists only on Windows. pwsh on Linux and macOS
+            # rejects the parameter outright ("not supported on this platform"),
+            # so passing it unconditionally fails every non-Windows pwsh run.
+            if os.name == "nt":
+                argv += ["-ExecutionPolicy", "Bypass"]
+            proc = _run([*argv, "-File", str(script)], d)
 
         elif shell_id == "cmd":
             script = d / "s.bat"
