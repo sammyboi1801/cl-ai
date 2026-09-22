@@ -19,11 +19,23 @@ takes the vector half as an explicit argument and defaults to None, so nothing
 turns this on by accident, and `build_embedder()` refuses to hand it back
 unless CL_AI_EMBEDDER names it.
 
-WHY, PRECISELY
-Not "the embeddings are noise" -- that was my first conclusion and it is
-wrong. Given fifty documents whose distractors are unrelated (fonts,
-certificates, packets), this model puts `mkdir`, `curl` and `ps` first for the
-matching queries. It separates distant things perfectly well.
+WHY, PRECISELY -- AND IT IS NOT A MYSTERY
+Cactus's porting guide says outright that this checkpoint has no embedding
+head: "this release does not ship one, so ... the engine reads the CONFIDENCE
+HEAD's probe pool instead, the same pooled residual cells the confidence
+score is computed from, and returns them as a unit-norm vector of 3072 floats
+(four probe queries over width 768)". And, plainly: "It is not a
+contrastively trained embedding".
+
+So `embed()` here is a by-product of the calibration head, not a retrieval
+model. hit@1 0.037 is exactly what that predicts, and no amount of centering
+or reweighting was ever going to change it. Worth knowing before the next
+person tries: the number was right, and the reason is published.
+
+The behaviour is still consistent with that. Given fifty documents whose
+distractors are unrelated (fonts, certificates, packets), it puts `mkdir`,
+`curl` and `ps` first for the matching queries -- it separates distant things
+perfectly well.
 
 What it cannot do is separate NEAR things, and a CLI catalog is nothing but
 near things. Every tldr page is one imperative sentence about files,

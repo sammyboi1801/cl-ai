@@ -307,3 +307,26 @@ def test_every_tool_in_the_corpus_converts_cleanly(corpus_tools) -> None:
 def test_no_schema_field_is_unbounded(corpus_tools, field: str) -> None:
     for tool in corpus_tools:
         assert len(schema_for(tool)[field]) < 250, tool.name
+
+
+def test_the_cap_matches_what_the_checkpoint_can_actually_hold() -> None:
+    """Pinned because it is a measured hardware fact, not a preference.
+
+    needle3.cact has no tool-retrieval head -- `retrieve_tools` is absent and
+    every declared schema goes into the prefix. Measured: 5 tools initialise
+    in 1.36s and answer correctly, 20 take 6.9s and return no call at all,
+    and 150 fail `needle_init` outright. Raising this constant does not give
+    the model more to choose from; it stops the model answering.
+    """
+    assert MAX_DECLARED_TOOLS == 5
+
+
+def test_a_huge_candidate_list_is_truncated_not_passed_through() -> None:
+    """The failure this prevents is not slowness. At 150 schemas
+    needle_init fails with code -1, which from the daemon's side is the
+    planner raising on every keystroke."""
+    tools = [
+        Tool(name=f"t{i}", description=f"Tool number {i}", binary=f"t{i}")
+        for i in range(900)
+    ]
+    assert len(schemas_for(tools)) == MAX_DECLARED_TOOLS

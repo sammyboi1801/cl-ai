@@ -57,10 +57,27 @@ from cl_ai.ir import Param, ParamKind, Tool
 
 __all__ = ["MAX_DECLARED_TOOLS", "schema_for", "schemas_for"]
 
-#: Above five declared tools Needle embeds each schema and keeps only the
-#: five highest-scoring in context. We narrow to five ourselves, from our own
-#: retrieval, so the selection is the one we measured rather than a second
-#: unmeasured ranker layered on top of it.
+#: Hard ceiling, measured against needle3.cact. Not a style choice.
+#:
+#: Cactus's two documentation pages disagree about this. The Python docs say
+#: that above five tools "every schema is embedded once at init by a built-in
+#: contrastive head" and only the top five enter context. The porting guide
+#: says of this exact checkpoint: "this release does not ship one, so on
+#: needle3.cact every declared tool goes into the prefix and retrieve_tools
+#: is absent".
+#:
+#: Tested, and the porting guide is right. `retrieve_tools` does not exist on
+#: the agent, and declaring more tools simply makes the prefix bigger:
+#:
+#:      tools     init      answer
+#:          1    0.44s      correct
+#:          5    1.36s      correct
+#:         20    6.90s      no call at all
+#:         50   22.51s      no call at all
+#:        150       --      needle_init failed (code -1)
+#:
+#: So there is no tool retrieval to delegate to, the cost is linear in the
+#: catalogue, and quality collapses past five. Retrieval stays ours.
 MAX_DECLARED_TOOLS = 5
 
 #: tldr marks mnemonic letters as `[c]reate`, `g[z]ipped`. Useful to a human
@@ -257,9 +274,10 @@ def schema_for(tool: Tool) -> dict[str, Any]:
 def schemas_for(tools: object) -> list[dict[str, Any]]:
     """Schemas for a retrieved candidate set, capped at what fits in context.
 
-    Capped rather than trusted to Needle's own retrieval: above five tools it
-    runs a second ranker we have not measured, and two stacked rankings make
-    a bad answer impossible to attribute.
+    The cap is not an optimisation. This checkpoint has no tool retrieval --
+    every declared schema goes into the prefix -- so the sixth tool costs
+    context and buys nothing, and the twentieth stops it answering at all.
+    See MAX_DECLARED_TOOLS for the measurements.
     """
     seen: set[str] = set()
     out: list[dict[str, Any]] = []
