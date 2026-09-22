@@ -101,15 +101,37 @@ def test_unquoted_output_is_returned_verbatim(shell_id, value):
 
 @given(value=text)
 @settings(max_examples=300, deadline=None)
-def test_posix_profiles_agree_with_each_other(value):
-    """Cross-profile invariant.
+def test_profiles_sharing_a_quote_style_agree(value):
+    """Cross-profile invariant, stated over quote_style rather than over "POSIX".
 
-    bash, zsh and fish all declare QuoteStyle.POSIX, so they must produce
-    identical output. If they should not agree, the profile is mismodelled and
-    the fix belongs in platform_, not here.
+    Any two profiles declaring the same QuoteStyle must produce identical
+    output; if they should not, the profile is mismodelled and the fix belongs
+    in platform_, not here.
+
+    This test previously asserted that bash, zsh AND fish agreed, which was
+    wrong -- it encoded the mismodelling rather than catching it. Fish now has
+    its own style, so it is no longer in the bash/zsh group.
     """
-    outs = {s: _quote_or_skip(value, s) for s in POSIX_SHELLS}
-    assert len(set(outs.values())) == 1, f"POSIX profiles disagree: {outs}"
+    groups: dict[object, dict[str, str]] = {}
+    for shell in ALL_SHELLS:
+        groups.setdefault(PROFILES[shell].quote_style, {})[shell] = _quote_or_skip(
+            value, shell
+        )
+    for style, outs in groups.items():
+        assert len(set(outs.values())) == 1, f"{style} profiles disagree: {outs}"
+
+
+@given(value=st.text(alphabet="ab\\'", min_size=1, max_size=8))
+@settings(max_examples=200, deadline=None)
+def test_fish_diverges_from_posix_on_backslashes(value):
+    """Guards the fix for the bug CI found.
+
+    Fish processes \\ and ' as escapes inside single quotes; bash and zsh do
+    not. If these two ever produced the same output for a backslash-bearing
+    value again, fish would have silently been re-modelled as POSIX.
+    """
+    assume("\\" in value)
+    assert _quote_or_skip(value, "fish") != _quote_or_skip(value, "bash")
 
 
 @pytest.mark.parametrize("shell_id", ALL_SHELLS)

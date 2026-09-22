@@ -26,6 +26,7 @@ class QuoteStyle(str, Enum):
     see render.quoting for the implementations.
     """
     POSIX = "posix"              # '...' with '\'' for embedded quotes
+    FISH = "fish"                # '...' but \ and ' are STILL escapes inside
     POWERSHELL = "powershell"    # '...' with '' for embedded quotes
     CMD = "cmd"                  # "..." with "" -- and several impossible cases
 
@@ -81,7 +82,13 @@ class ShellProfile:
 
     @property
     def is_posix_like(self) -> bool:
-        return self.quote_style is QuoteStyle.POSIX
+        """Text-stream shells with POSIX-ish syntax. Includes fish.
+
+        Note this is not the same question as "does it quote like POSIX" --
+        fish is POSIX-like in structure while quoting differently. Use
+        `quote_style` for anything about quoting.
+        """
+        return self.quote_style in (QuoteStyle.POSIX, QuoteStyle.FISH)
 
 
 _POSIX_BUILTINS = MappingProxyType({})
@@ -124,7 +131,7 @@ PROFILES: dict[str, ShellProfile] = {
         builtin_map=_POSIX_BUILTINS,
     ),
     "fish": ShellProfile(
-        id="fish", quote_style=QuoteStyle.POSIX, path_style=PathStyle.POSIX,
+        id="fish", quote_style=QuoteStyle.FISH, path_style=PathStyle.POSIX,
         pipeline=PipelineKind.TEXT, env_syntax=EnvSyntax.DOLLAR,
         line_ending="\n", comment_prefix="#", exec_flags=("fish", "-c"),
         builtin_map=_POSIX_BUILTINS,

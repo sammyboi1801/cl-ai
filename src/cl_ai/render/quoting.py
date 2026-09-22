@@ -69,11 +69,13 @@ def _reject_control(value: str, shell: str) -> None:
 
 
 def quote_posix(value: str) -> str:
-    """Quote for bash / zsh / fish.
+    r"""Quote for bash and zsh.
 
     Single quotes are absolute in POSIX shells: no expansion of any kind occurs
     inside them, so the only character needing care is the single quote itself,
-    which is closed, escaped, and reopened.
+    which is closed, escaped, and reopened as '\''.
+
+    Not fish -- see quote_fish, which looks similar and is not.
     """
     _reject_control(value, "a POSIX shell")
     if value == "":
@@ -88,20 +90,61 @@ def quote_posix(value: str) -> str:
     return "'" + value.replace("'", "'\\''") + "'"
 
 
+def quote_fish(value: str) -> str:
+    r"""Quote for fish, which is NOT POSIX here despite looking like it.
+
+    In a POSIX shell nothing whatsoever is special inside single quotes. Fish
+    keeps two escapes live inside them: a backslash still escapes, and so does
+    a single quote. Two consequences:
+
+      * the POSIX form corrupts any value containing a backslash, because fish
+        reads 'a\\b' as a\b;
+      * the POSIX close-escape-reopen dance for an embedded quote is
+        unnecessary, since fish accepts \' directly inside the quotes.
+
+    Found by CI rather than by reasoning. fish was the only shell to fail the
+    round-trip suite and it failed on exactly the backslash-bearing cases;
+    modelling it as QuoteStyle.POSIX was itself the bug.
+    """
+    _reject_control(value, "fish")
+    if value == "":
+        return "''"
+    if _POSIX_SAFE.match(value) and not value.startswith("-"):
+        return value
+    # Backslashes first: escaping the quotes introduces backslashes of its own,
+    # and doubling those a second time would corrupt the value.
+    escaped = value.replace("\\", "\\\\").replace("'", "\\'")
+    return "'" + escaped + "'"
+
+
+#: Every character PowerShell accepts as a single-quote string delimiter.
+#: ASCII apostrophe plus the typographic quotes -- PowerShell treats
+#: U+2018/2019/201A/201B as interchangeable with it, so a value containing one
+#: escapes the string unless it is doubled like an ordinary quote. Found by the
+#: property tests; a smart apostrophe is ordinary in real filenames ("don't"
+#: pasted from a word processor), so this is reachable without malice.
+_PS_QUOTES = ("'", "‘", "’", "‚", "‛")
+
+
 def quote_powershell(value: str) -> str:
     """Quote for PowerShell / pwsh.
 
     PowerShell's single-quoted strings are literal -- `$`, backtick and `"` do
-    not expand inside them -- and an embedded single quote is written by
-    doubling it. This is why we prefer single quotes over double: the
-    double-quoted form would require escaping `$` and backtick as well.
+    not expand inside them -- and an embedded quote is written by doubling it.
+    This is why we prefer single quotes over double: the double-quoted form
+    would require escaping `$` and backtick as well.
+
+    "Quote" here means any member of _PS_QUOTES, not just the ASCII one.
     """
     _reject_control(value, "PowerShell")
     if value == "":
         return "''"
     if _PS_SAFE.match(value) and not value.startswith("-"):
         return value
-    return "'" + value.replace("'", "''") + "'"
+    escaped = value
+    for mark in _PS_QUOTES:
+        escaped = escaped.replace(mark, mark * 2)
+    return "'" + escaped + "'"
 
 
 def quote_cmd(value: str) -> str:
@@ -138,6 +181,7 @@ def quote_cmd(value: str) -> str:
 
 _QUOTERS = {
     QuoteStyle.POSIX: quote_posix,
+    QuoteStyle.FISH: quote_fish,
     QuoteStyle.POWERSHELL: quote_powershell,
     QuoteStyle.CMD: quote_cmd,
 }

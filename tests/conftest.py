@@ -30,7 +30,7 @@ def _escape(text: str) -> str:
     )
 
 
-def pytest_terminal_summary(terminalreporter, exitstatus, config):  # noqa: ARG001
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
     if not _ON_CI:
         return
 
@@ -39,10 +39,15 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):  # noqa: ARG0
     reports = (failed + errored)[:_MAX_ANNOTATIONS]
 
     for report in reports:
-        detail = str(getattr(report, "longrepr", "") or "")[-_MAX_CHARS:]
+        raw = str(getattr(report, "longrepr", "") or "")
+        # Keep the assertion, not the source listing around it. pytest prefixes
+        # the actual message lines with "E ", and those are the only part that
+        # says what went wrong; the rest is context we can already read locally.
+        lines = [ln[1:].strip() for ln in raw.splitlines() if ln.startswith("E ")]
+        detail = "\n".join(lines) if lines else raw[-_MAX_CHARS:]
         print(
             f"::error title={_escape(report.nodeid)[:200]}::"
-            f"{_escape(detail)}"
+            f"{_escape(detail[:_MAX_CHARS])}"
         )
 
     total = len(failed) + len(errored)
