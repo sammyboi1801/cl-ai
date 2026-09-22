@@ -491,7 +491,10 @@ def parse_page(text: str, source: str, os_target: str) -> RawTool | None:
     None rather than an exception: a malformed page in a 7k-page corpus is a
     data problem to count, not a build failure to abort on.
     """
-    lines = [line.rstrip() for line in text.splitlines()]
+    # Strip a BOM here too, not only at the read site. parse_page is public and
+    # callers may hand it text decoded elsewhere; a leading ﻿ would defeat
+    # the title check below and drop the page without a word.
+    lines = [line.rstrip() for line in text.lstrip("﻿").splitlines()]
     nonblank = [line for line in lines if line.strip()]
     if not nonblank or not nonblank[0].startswith("# "):
         return None
@@ -594,13 +597,27 @@ def default_root() -> Path | None:
     """
     override = os.environ.get("CL_AI_TLDR_ROOT")
     if override:
-        candidate = Path(override)
-        return candidate if candidate.is_dir() else None
+        try:
+            candidate = Path(override)
+            return candidate if candidate.is_dir() else None
+        except (OSError, ValueError):
+            # A malformed override (embedded NUL, absurd length) must not take
+            # the process down -- it means "no corpus", like any other miss.
+            return None
 
     candidates: list[Path] = []
-    home = Path.home()
-    candidates.append(home / ".cache" / "tldr")
-    candidates.append(home / ".tldr" / "cache" / "pages")
+    # Path.home() raises RuntimeError when no home can be determined, which
+    # happens in containers and under some service accounts. Tier 4 being
+    # unavailable there is fine; crashing during discovery is not.
+    try:
+        home = Path.home()
+    except RuntimeError:
+        home = None
+    if home is not None:
+        candidates.append(home / ".cache" / "tldr")
+        candidates.append(home / ".tldr" / "cache" / "pages")
+        # macOS clients follow the platform convention rather than XDG.
+        candidates.append(home / "Library" / "Caches" / "tldr")
     local = os.environ.get("LOCALAPPDATA")
     if local:
         candidates.append(Path(local) / "tldr")
@@ -609,8 +626,11 @@ def default_root() -> Path | None:
         candidates.append(Path(xdg) / "tldr")
 
     for candidate in candidates:
-        if candidate.is_dir():
-            return candidate
+        try:
+            if candidate.is_dir():
+                return candidate
+        except OSError:
+            continue
     return None
 
 
@@ -660,14 +680,33 @@ class TldrSource:
     def harvest(self, binaries: Iterable[str] | None = None) -> Iterator[RawTool]:
         wanted = {b.lower() for b in binaries} if binaries is not None else None
         for pages in self._page_dirs():
-            for os_dir in sorted(p for p in pages.iterdir() if p.is_dir()):
+            # Directory scans are guarded, not just file reads. The corpus is a
+            # path the user controls: it can be on a removable drive, on a
+            # network share that drops, or hold a directory the process cannot
+            # list. An OSError escaping here would abort the whole catalog
+            # build over one bad directory.
+            try:
+                os_dirs = sorted(p for p in pages.iterdir() if p.is_dir())
+            except OSError:
+                continue
+            for os_dir in os_dirs:
                 os_target = os_dir.name
-                for page in sorted(os_dir.glob("*.md")):
+                try:
+                    page_files = sorted(os_dir.glob("*.md"))
+                except OSError:
+                    continue
+                for page in page_files:
                     try:
                         if page.stat().st_size > MAX_PAGE_BYTES:
                             continue
-                        text = page.read_text(encoding="utf-8")
-                    except (OSError, UnicodeDecodeError):
+                        # utf-8-sig, not utf-8: a byte-order mark left by a
+                        # Windows editor or a PowerShell redirect would
+                        # otherwise sit in front of the `# ` title, so the page
+                        # failed its title check and vanished from the catalog
+                        # silently. Decoding is identical when no BOM is
+                        # present.
+                        text = page.read_text(encoding="utf-8-sig")
+                    except (OSError, UnicodeDecodeError, ValueError):
                         # An unreadable page is one missing tool, not a failed
                         # catalog build.
                         continue

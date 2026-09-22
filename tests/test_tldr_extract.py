@@ -39,6 +39,7 @@ from cl_ai.catalog.extract.tldr import (
     PlaceholderError,
     TldrSource,
     capabilities_for,
+    default_root,
     infer_type,
     is_flag_token,
     parse_page,
@@ -768,6 +769,124 @@ def test_non_markdown_files_are_ignored(tmp_path: Path) -> None:
     (pages / "LICENSE").write_text("not a page", encoding="utf-8")
     (pages / "index.json").write_text("{}", encoding="utf-8")
     assert len(list(TldrSource(tmp_path).harvest())) == 1
+
+
+# --------------------------------------------------------------------------
+# Encoding and line endings
+#
+# The corpus is a path the USER controls -- their own tldr client cache, or a
+# git clone under their own core.autocrlf setting. None of our .gitattributes
+# rules apply to it, so the parser has to cope with whatever they have.
+# --------------------------------------------------------------------------
+
+_PAGE = "# foo bar\n\n> Does a thing.\n\n- Do it:\n\n`foo bar {{[-m|--message]}}`\n"
+
+
+@pytest.mark.parametrize(
+    ("ending", "label"),
+    [("\n", "LF"), ("\r\n", "CRLF"), ("\r", "CR")],
+)
+def test_line_endings(ending: str, label: str) -> None:
+    tool = parse_page(_PAGE.replace("\n", ending), source="s", os_target="common")
+    assert tool is not None, label
+    assert tool.binary == "foo"
+    assert tool.path == ("bar",)
+    assert tool.examples
+    for example in tool.examples:
+        assert "\r" not in example.template
+        assert "\r" not in example.literal
+
+
+def test_utf8_bom_is_stripped() -> None:
+    """A BOM used to hide the `# ` title, dropping the page with no warning.
+
+    Windows editors and PowerShell redirects add one routinely, so a user's
+    corpus can carry it while ours never does.
+    """
+    tool = parse_page("﻿" + _PAGE, source="s", os_target="common")
+    assert tool is not None
+    assert tool.binary == "foo"
+
+
+def test_bom_on_disk_is_stripped(tmp_path: Path) -> None:
+    pages = tmp_path / "pages" / "common"
+    pages.mkdir(parents=True)
+    (pages / "foo.md").write_bytes(b"\xef\xbb\xbf" + _PAGE.encode("utf-8"))
+    tools = list(TldrSource(tmp_path).harvest())
+    assert [t.binary for t in tools] == ["foo"]
+
+
+def test_crlf_on_disk(tmp_path: Path) -> None:
+    pages = tmp_path / "pages" / "common"
+    pages.mkdir(parents=True)
+    (pages / "foo.md").write_bytes(_PAGE.replace("\n", "\r\n").encode("utf-8"))
+    tools = list(TldrSource(tmp_path).harvest())
+    assert [t.binary for t in tools] == ["foo"]
+    assert all("\r" not in e.literal for t in tools for e in t.examples)
+
+
+def test_non_ascii_title_yields_a_usable_key() -> None:
+    tool = parse_page("# 你好\n\n> Desc.\n", source="s", os_target="common")
+    assert tool is not None
+    assert tool.qualified_name
+    assert tool.qualified_name.isascii()
+
+
+# --------------------------------------------------------------------------
+# Filesystem hostility
+# --------------------------------------------------------------------------
+
+def test_directory_named_like_a_page_is_skipped(tmp_path: Path) -> None:
+    """Reading it raises OSError; one bad entry is not a failed build."""
+    pages = tmp_path / "pages" / "common"
+    pages.mkdir(parents=True)
+    (pages / "ok.md").write_text(_PAGE, encoding="utf-8")
+    (pages / "weird.md").mkdir()
+    assert [t.binary for t in TldrSource(tmp_path).harvest()] == ["foo"]
+
+
+def test_stray_file_among_os_directories(tmp_path: Path) -> None:
+    pages = tmp_path / "pages"
+    (pages / "common").mkdir(parents=True)
+    (pages / "common" / "ok.md").write_text(_PAGE, encoding="utf-8")
+    (pages / "index.json").write_text("{}", encoding="utf-8")
+    assert len(list(TldrSource(tmp_path).harvest())) == 1
+
+
+def test_root_that_is_a_file(tmp_path: Path) -> None:
+    target = tmp_path / "afile"
+    target.write_text("x", encoding="utf-8")
+    source = TldrSource(target)
+    assert not source.available()
+    assert list(source.harvest()) == []
+
+
+def test_default_root_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Called during discovery; a crash here takes the daemon down."""
+    monkeypatch.delenv("CL_AI_TLDR_ROOT", raising=False)
+
+    def no_home() -> Path:
+        raise RuntimeError("no home directory")
+
+    monkeypatch.setattr(Path, "home", staticmethod(no_home))
+    assert default_root() is None
+
+
+def test_default_root_honours_the_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CL_AI_TLDR_ROOT", str(tmp_path))
+    assert default_root() == tmp_path
+    monkeypatch.setenv("CL_AI_TLDR_ROOT", str(tmp_path / "missing"))
+    assert default_root() is None
+
+
+def test_pathological_placeholder_count() -> None:
+    """A page is prose, but nothing stops one line holding thousands of slots."""
+    template = "x " + "{{a}} " * 2000
+    tool = parse_page(
+        f"# x\n\n> D.\n\n- Go:\n\n`{template}`\n", source="s", os_target="common"
+    )
+    assert tool is not None
+    assert len(tool.examples) == 1
 
 
 def test_harvest_is_lazy() -> None:
