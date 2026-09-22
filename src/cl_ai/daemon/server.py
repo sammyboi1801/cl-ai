@@ -50,6 +50,9 @@ log = logging.getLogger("cl_ai.daemon")
 #: Leave headroom inside the caller's budget for encoding and the socket hop.
 _OVERHEAD_MS = 15
 
+#: How long to let the SHUTDOWN reply flush before unbinding the endpoint.
+_SHUTDOWN_GRACE_S = 0.25
+
 
 class Daemon:
     """Holds the warm state and answers requests."""
@@ -63,6 +66,10 @@ class Daemon:
         self._indexes: dict[tuple[str, str], ToolIndex] = {}
         self._lock = threading.Lock()
         self._building = threading.Event()
+        #: Set when a SHUTDOWN request arrives. The handler cannot stop the
+        #: server itself -- it runs on a connection thread that the stop would
+        #: join, deadlocking -- so it signals and `main` does the stopping.
+        self._shutdown = threading.Event()
 
     # -- warm state -------------------------------------------------------
 
@@ -123,6 +130,31 @@ class Daemon:
             time.monotonic() - started,
         )
 
+        # Build the index for the shell we are most likely to be asked about,
+        # here rather than on the first request. Measured: the lazy build put
+        # 104ms on the very first Tab after startup and 4ms on every one
+        # after, and the first keystroke is the one a user judges this by.
+        # Getting the shell wrong costs one wasted build, not correctness --
+        # index_for() still builds the right one on demand.
+        try:
+            from ..platform_ import detect
+
+            likely = detect().id
+        except Exception:
+            log.debug("shell detection failed; leaving the index lazy", exc_info=True)
+            return
+        warmed = time.monotonic()
+        if self.index_for(likely, sys.platform) is not None:
+            log.info(
+                "index ready for %s/%s in %.2fs",
+                sys.platform, likely, time.monotonic() - warmed,
+            )
+
+    @property
+    def shutdown_requested(self) -> threading.Event:
+        """Set once a SHUTDOWN request has been answered."""
+        return self._shutdown
+
     @property
     def inventory(self) -> Inventory | None:
         with self._lock:
@@ -171,6 +203,7 @@ class Daemon:
             if request.kind is Kind.PING:
                 return self._finish(Response(), started)
             if request.kind is Kind.SHUTDOWN:
+                self._shutdown.set()
                 return self._finish(Response(message="shutting down"), started)
             return self._finish(self._suggest(request, started), started)
         except Exception as exc:
@@ -337,8 +370,17 @@ def main(argv: list[str] | None = None) -> int:
     log.info("listening on %s", endpoint)
 
     try:
-        while True:
-            time.sleep(3600)
+        # Waited on with a timeout in a loop rather than blocking forever:
+        # on Windows an untimed Event.wait() does not observe Ctrl-C, and a
+        # daemon that can only be killed is a daemon that gets killed.
+        while not daemon.shutdown_requested.wait(timeout=1.0):
+            pass
+        log.info("shutdown requested")
+        # The reply to the SHUTDOWN request is still being written by its
+        # connection thread. Unbinding underneath it would send the caller a
+        # closed socket, which reads as "the daemon was not running" -- the
+        # opposite of what just happened.
+        time.sleep(_SHUTDOWN_GRACE_S)
     except KeyboardInterrupt:
         log.info("stopping")
     finally:

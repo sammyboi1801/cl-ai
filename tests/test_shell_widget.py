@@ -115,22 +115,57 @@ def test_port_file_location_matches_the_python_side():
 
 
 @requires_powershell
-def test_no_daemon_yields_no_suggestions_and_no_error():
-    """The commonest situation in the wild: the daemon is not running."""
+def test_no_daemon_yields_no_suggestions_and_no_error(tmp_path):
+    """The commonest situation in the wild: the daemon is not running.
+
+    The absence is ARRANGED, via a port file that does not exist, rather than
+    assumed. The first version of this test just called the function and
+    trusted the developer to have no daemon -- which was true on CI and true
+    right up until the product started working, at which point it failed on
+    the machine of anyone actually using it.
+    """
+    missing = tmp_path / "definitely-not-a-daemon.port"
     result = run_ps(
-        "$s = Get-ClAiSuggestions -Buffer 'git com'; Write-Output \"count=$($s.Count)\""
+        "$s = Get-ClAiSuggestions -Buffer 'git com'; Write-Output \"count=$($s.Count)\"",
+        port_file=str(missing),
     )
     assert result.returncode == 0, result.stderr
     assert "count=0" in result.stdout
 
 
+@pytest.mark.skipif(os.name != "nt", reason="loopback transport is the Windows path")
 @requires_powershell
-def test_empty_buffer_does_not_contact_the_daemon():
-    result = run_ps(
-        "$s = Get-ClAiSuggestions -Buffer '   '; Write-Output \"count=$($s.Count)\""
-    )
+def test_empty_buffer_does_not_contact_the_daemon(tmp_path):
+    """Proven against a LIVE daemon that counts what it receives.
+
+    The earlier version just asserted the result was empty, which is true
+    whether or not a request was sent -- it could not fail. The claim in the
+    name is about traffic, so the test has to be about traffic: Tab on a blank
+    line is the commonest keypress in a shell, and waking the daemon for it
+    would be a round trip per keystroke for nothing.
+    """
+    endpoint = str(tmp_path / "ep")
+    received: list[Request] = []
+
+    def handler(req: Request) -> Response:
+        received.append(req)
+        return Response()
+
+    with Server(handler, endpoint):
+        result = run_ps(
+            "$s = Get-ClAiSuggestions -Buffer '   ';"
+            ' Write-Output "count=$($s.Count)"',
+            port_file=port_file_for(endpoint),
+        )
+        # Snapshotted INSIDE the block. Server.stop() unblocks accept() by
+        # connecting to itself, and that self-connect reaches the handler as
+        # an ordinary empty SUGGEST -- so asserting after the `with` records a
+        # request the widget never sent. Cost me one confident false positive.
+        seen = list(received)
+
     assert result.returncode == 0, result.stderr
     assert "count=0" in result.stdout
+    assert seen == [], f"blank buffer reached the daemon: {seen}"
 
 
 @pytest.mark.skipif(os.name != "nt", reason="loopback transport is the Windows path")
