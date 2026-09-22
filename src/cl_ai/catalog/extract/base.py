@@ -29,10 +29,12 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Protocol, runtime_checkable
 
-from cl_ai.ir import Capability, Provenance, SourceTier
+# ParamKind lives in ir, not here: it describes the canonical schema, so the
+# contract owns it and extractors speak it. Re-exported below because every
+# tier needs it.
+from cl_ai.ir import Capability, ParamKind, Provenance, SourceTier
 
 __all__ = [
     "DESTRUCTIVE_HINTS",
@@ -80,21 +82,6 @@ def _identifier(segment: str) -> str:
     return spelled or "unnamed"
 
 
-class ParamKind(str, Enum):
-    """How a parameter is written at the call site.
-
-    The distinction is load-bearing for renderers: an OPTION carries its own
-    name into the rendered command, a POSITIONAL is placed by ordinal, and a
-    SUBCOMMAND is neither (it is part of the tool's identity, not its
-    arguments). Conflating the three is how a renderer produces
-    `git --commit message` instead of `git commit -m message`.
-    """
-
-    OPTION = "option"
-    POSITIONAL = "positional"
-    SUBCOMMAND = "subcommand"
-
-
 @dataclass(frozen=True)
 class RawParam:
     """One parameter as a single tier saw it, before canonicalisation.
@@ -107,6 +94,11 @@ class RawParam:
 
     name: str
     kind: ParamKind
+    #: An IR param type: string | integer | number | boolean | array. Set by
+    #: the tier, because only the tier sees the evidence -- tldr knows
+    #: `{{100}}` is numeric and `{{file1 file2 ...}}` is repeatable, and that
+    #: information is gone by the time normalisation sees a bare name.
+    type: str = "string"
     short: str | None = None          # "-m"
     long: str | None = None           # "--message"
     value_name: str | None = None     # "message" from {{[-m|--message]}} {{message}}

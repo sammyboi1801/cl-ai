@@ -391,11 +391,15 @@ def _params_from_template(
 
             # An option placeholder immediately followed by a value placeholder
             # means the flag takes that value: `{{[-o|--output]}} {{path/to/file}}`.
+            # The value's placeholder is also the only place its TYPE is
+            # visible, so read it here rather than re-deriving from the name.
             value_name = None
+            value_type = "boolean"
             if index + 1 < len(placeholders):
                 nxt = placeholders[index + 1]
                 if not nxt.is_option:
                     value_name = slot_identifier(nxt.content)
+                    value_type = infer_type(nxt.content)
 
             key = f"opt:{long or short or name}"
             if key in seen:
@@ -411,6 +415,10 @@ def _params_from_template(
                     description=description,
                     repeatable=False,
                     choices=ph.alternatives,
+                    # No following value placeholder means the flag is a
+                    # switch, which a renderer must emit bare rather than with
+                    # an argument it has to invent.
+                    type=value_type,
                 )
             )
         else:
@@ -419,13 +427,15 @@ def _params_from_template(
             if key in seen:
                 continue
             seen.add(key)
+            inferred = infer_type(ph.content)
             params.append(
                 RawParam(
                     name=name,
                     kind=ParamKind.POSITIONAL,
                     value_name=name,
                     description=description,
-                    repeatable=infer_type(ph.content) == "array",
+                    repeatable=inferred == "array",
+                    type=inferred,
                 )
             )
 
@@ -451,6 +461,7 @@ def _params_from_template(
                 short=short,
                 long=long,
                 description=description,
+                type="boolean",   # a bare literal flag carries no value
             )
         )
     return params

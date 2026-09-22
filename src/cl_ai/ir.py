@@ -45,17 +45,71 @@ class Provenance:
     confidence: float = 1.0
     conflicts: tuple[str, ...] = ()
 
+    def enum_untrustworthy(self, enum: tuple[str, ...]) -> bool:
+        """Whether a value set from this source should be treated as a guess.
+
+        Completion scripts and native introspection state valid values
+        outright, so an enum from tier 0-2 is a fact. Prose sources -- man
+        pages, tldr, scraped help -- only ever show *some* values in passing,
+        so treating those as the complete set would make a planner reject
+        arguments that are perfectly valid.
+        """
+        return bool(enum) and self.tier >= SourceTier.MANDOCS
+
+
+class ParamKind(str, Enum):
+    """How a parameter is written at the call site.
+
+    Load-bearing for renderers: an OPTION carries its own name into the
+    command, a POSITIONAL is placed by ordinal, and a SUBCOMMAND is part of
+    the tool's identity rather than its arguments. Conflating them is how a
+    renderer emits `git --commit message` instead of `git commit -m message`.
+    """
+
+    OPTION = "option"
+    POSITIONAL = "positional"
+    SUBCOMMAND = "subcommand"
+
 
 @dataclass(frozen=True)
 class Param:
     name: str
     type: str                          # string | integer | number | boolean | array
+    kind: ParamKind = ParamKind.POSITIONAL
+    #: The exact token a renderer must emit, e.g. "--gpg-sign" or "/list".
+    #:
+    #: Stored rather than derived, because it cannot be derived. `name` is a
+    #: slug -- `--gpg-sign` becomes `gpg_sign` -- and reconstructing the flag
+    #: from the slug has to guess whether each underscore was a hyphen. Guess
+    #: wrong and the rendered command carries a flag the tool will reject,
+    #: which is the confidently-wrong-command failure this whole design exists
+    #: to avoid. None for positionals, which have no token of their own.
+    flag: str | None = None
     description: str = ""
+    #: Valid VALUES for this parameter -- never alternative spellings of its
+    #: flag. `-m` and `--message` are two ways to write one option and belong
+    #: in `flag`/`short`; `{{[add|install]}}` really is a value set. Mixing the
+    #: two would let a planner pass "-m" as the value of --message.
     enum: tuple[str, ...] = ()
+    #: The short spelling, when a source gave both. Presentation only: renderers
+    #: prefer `flag` because a suggestion a human is about to read and run is
+    #: clearer as `--message` than `-m`.
+    short: str | None = None
     required: bool = False
     repeatable: bool = False
     default: Any = None
     provenance: Provenance | None = None
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("Param.name must be non-empty")
+        if self.kind is ParamKind.OPTION and not (self.flag or self.short):
+            # An option with no spelling cannot be rendered at all. Catching it
+            # here turns a silent no-op in the renderer into a build-time error
+            # in the catalog, where there is a source path to point at.
+            raise ValueError(
+                f"option parameter {self.name!r} has neither flag nor short form"
+            )
 
 
 class Capability(str, Enum):
@@ -83,6 +137,10 @@ class Tool:
     capabilities: frozenset[Capability] = frozenset()
     platforms: frozenset[str] = frozenset()   # shell profile ids it renders to
     examples: tuple[str, ...] = ()
+    #: Upstream documentation, when a source supplied it. Not used to render
+    #: anything -- it is what lets the UI answer "where did this come from?",
+    #: which is the honest response when a user does not trust a suggestion.
+    homepage: str | None = None
     provenance: Provenance | None = None
 
     @property
