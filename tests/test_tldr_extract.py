@@ -670,6 +670,46 @@ def test_dedicated_network_tool_needs_no_subcommand() -> None:
     assert Capability.NEEDS_NETWORK in infer_capabilities("curl", ())
 
 
+@pytest.mark.parametrize("binary", ["rm", "rmdir", "shred", "dd", "mkfs", "kill", "del"])
+def test_genuinely_destructive_tools_are_flagged(binary: str) -> None:
+    assert Capability.DESTRUCTIVE in infer_capabilities(binary, ())
+
+
+@pytest.mark.parametrize(
+    ("binary", "path"),
+    [("docker", ()), ("ps", ()), ("git", ()), ("docker", ("ps",)), ("git", ("log",))],
+)
+def test_a_destructive_subcommand_does_not_poison_its_parent(
+    binary: str, path: tuple[str, ...]
+) -> None:
+    """Observed live: "list running containers" marked `docker` and `ps` as
+    destructive, on a query that destroys nothing.
+
+    A bare binary's examples span its whole surface, so `docker rm` and a `ps`
+    example piped into `kill` flagged the parents. A marker shown on harmless
+    commands is worse than none at all, because it teaches the user to dismiss
+    the one that matters -- so DESTRUCTIVE is judged on identity and prose,
+    never on examples.
+    """
+    caps = infer_capabilities(
+        binary,
+        path,
+        examples=[f"{binary} rm something", f"{binary} ps | kill"],
+        description="manage things",
+    )
+    assert Capability.DESTRUCTIVE not in caps
+
+
+def test_destructive_still_fires_on_a_destructive_subcommand() -> None:
+    assert Capability.DESTRUCTIVE in infer_capabilities("docker", ("rmi",))
+    assert Capability.DESTRUCTIVE in infer_capabilities("git", ("rm",))
+
+
+def test_destructive_can_come_from_the_description() -> None:
+    caps = infer_capabilities("wipefs", (), description="erase a filesystem signature")
+    assert Capability.DESTRUCTIVE in caps
+
+
 def test_elevation_detected_from_examples() -> None:
     caps = infer_capabilities("apt", ("install",), examples=["sudo apt install vim"])
     assert Capability.ELEVATED in caps

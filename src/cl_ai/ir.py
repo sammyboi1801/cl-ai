@@ -122,6 +122,33 @@ class Capability(str, Enum):
 
 
 @dataclass(frozen=True)
+class Example:
+    """A worked example: what someone wanted, and the command that did it.
+
+    The description is not decoration. It is the only text in the whole
+    catalog that states an INTENT in the words a user would actually type --
+    "commit staged files with the specified message" against `git commit -m`.
+    A tool's own description says what the tool is; an example description
+    says what you would want it for, which is what a natural-language query
+    is made of.
+
+    Keeping only the command text, as an earlier version did, measurably
+    crippled retrieval: queries phrased as intent had nothing to match except
+    tool names, so `copy a file` found the tool literally named `file`.
+    """
+
+    description: str
+    command: str
+
+    def __post_init__(self) -> None:
+        if not self.command:
+            raise ValueError("Example.command must be non-empty")
+
+    def __str__(self) -> str:
+        return self.command
+
+
+@dataclass(frozen=True)
 class Tool:
     """One leaf command, e.g. `aws_s3_cp`.
 
@@ -136,7 +163,7 @@ class Tool:
     params: tuple[Param, ...] = ()
     capabilities: frozenset[Capability] = frozenset()
     platforms: frozenset[str] = frozenset()   # shell profile ids it renders to
-    examples: tuple[str, ...] = ()
+    examples: tuple[Example, ...] = ()
     #: Upstream documentation, when a source supplied it. Not used to render
     #: anything -- it is what lets the UI answer "where did this come from?",
     #: which is the honest response when a user does not trust a suggestion.

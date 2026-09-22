@@ -144,7 +144,7 @@ def test_same_family_findings_do_merge() -> None:
     ])
     variants = catalog.by_name["ls"]
     assert len(variants) == 1
-    assert set(variants[0].tool.examples) == {"ls -l", "ls -G"}
+    assert {e.command for e in variants[0].tool.examples} == {"ls -l", "ls -G"}
 
 
 # --------------------------------------------------------------------------
@@ -413,7 +413,7 @@ def test_examples_are_additive_and_deduplicated() -> None:
         raw("tool", source="b", examples=(example("tool --x"), example("tool --z"))),
     ])
     examples = catalog.select("tool").examples
-    assert sorted(examples) == ["tool --x", "tool --y", "tool --z"]
+    assert sorted(e.command for e in examples) == ["tool --x", "tool --y", "tool --z"]
 
 
 def test_platforms_union_across_os_targets() -> None:

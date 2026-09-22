@@ -40,6 +40,7 @@ from typing import Generic, TypeVar
 
 from cl_ai.ir import (
     Capability,
+    Example,
     Param,
     ParamKind,
     Provenance,
@@ -447,13 +448,18 @@ def normalize(findings: Iterable[RawTool]) -> Catalog:
         # is exactly what the planner wants. Deduplicated by template so the
         # same page counted twice does not inflate the list.
         seen_templates: set[str] = set()
-        examples: list[str] = []
+        examples: list[Example] = []
         for finding in group:
             for example in finding.examples:
                 if example.literal in seen_templates:
                     continue
                 seen_templates.add(example.literal)
-                examples.append(example.literal)
+                # The description travels with the command. It states the
+                # INTENT, which is what a natural-language query is made of,
+                # and dropping it left retrieval nothing to match but names.
+                examples.append(
+                    Example(description=example.description, command=example.literal)
+                )
 
         os_targets: set[str] = set()
         for finding in group:

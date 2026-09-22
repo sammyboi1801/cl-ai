@@ -277,7 +277,7 @@ def shells_for_os(os_targets: Iterable[str]) -> frozenset[str]:
 # far below a false negative (an unflagged `rm -rf` one Enter away), so the
 # lists lean inclusive.
 DESTRUCTIVE_HINTS: frozenset[str] = frozenset({
-    "rm", "rmdir", "del", "erase", "unlink", "shred", "srm", "wipe",
+    "rm", "rmdir", "rmi", "del", "erase", "unlink", "shred", "srm", "wipe",
     "mkfs", "fdisk", "parted", "dd", "format", "diskpart",
     "kill", "killall", "pkill", "taskkill", "shutdown", "reboot", "halt",
     "truncate", "drop", "dropdb", "destroy", "purge", "prune",
@@ -340,7 +340,19 @@ def infer_capabilities(
         example_words |= _words(ex)
     prose = _words(description)
 
-    if identity & DESTRUCTIVE_HINTS or example_words & DESTRUCTIVE_HINTS:
+    # DESTRUCTIVE is judged on IDENTITY and prose only, never on examples.
+    #
+    # A bare binary's examples span its entire surface, so one destructive
+    # subcommand poisons the parent: `docker` was flagged because its examples
+    # include `docker rm`, and `ps` because its examples pipe into `kill`.
+    # Observed live -- "list running containers" returned `docker` and `ps`
+    # both carrying a destructive marker, on a query that destroys nothing.
+    #
+    # That is the failure this inference is supposed to avoid. A marker shown
+    # on harmless commands is worse than no marker at all, because it teaches
+    # the user to dismiss the one that matters. Identity still catches the
+    # cases that count: `rm`, `shred`, `git push --force`, `docker rmi`.
+    if identity & DESTRUCTIVE_HINTS or (prose & DESTRUCTIVE_HINTS):
         caps.add(Capability.DESTRUCTIVE)
         caps.add(Capability.WRITES)
     if identity & _WRITE_HINTS or (prose & _WRITE_HINTS):

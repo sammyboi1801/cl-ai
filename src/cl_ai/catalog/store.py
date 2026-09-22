@@ -30,6 +30,7 @@ from typing import Any
 
 from cl_ai.ir import (
     Capability,
+    Example,
     Param,
     ParamKind,
     Provenance,
@@ -172,6 +173,23 @@ def _param_from_json(data: Mapping[str, Any]) -> Param:
     )
 
 
+def _example_from_json(data: Any) -> Example:
+    """Accept both the object form and the older bare-string form.
+
+    Tolerated rather than rejected because SCHEMA_VERSION already guards the
+    real format change; this keeps a hand-written or trimmed catalog usable
+    instead of failing on a field that carries no command semantics.
+    """
+    if isinstance(data, str):
+        return Example(description="", command=data)
+    if isinstance(data, dict):
+        return Example(
+            description=str(data.get("description", "")),
+            command=str(data["command"]),
+        )
+    raise TypeError(f"cannot read an example from {type(data).__name__}")
+
+
 def _tool_to_json(tool: Tool) -> dict[str, Any]:
     return {
         "name": tool.name,
@@ -184,7 +202,9 @@ def _tool_to_json(tool: Tool) -> dict[str, Any]:
         # diffed, cached by content, or trusted when it changes.
         "capabilities": sorted(c.value for c in tool.capabilities),
         "platforms": sorted(tool.platforms),
-        "examples": list(tool.examples),
+        "examples": [
+            {"description": e.description, "command": e.command} for e in tool.examples
+        ],
         "homepage": tool.homepage,
         "provenance": _provenance_to_json(tool.provenance),
     }
@@ -201,7 +221,7 @@ def _tool_from_json(data: Mapping[str, Any]) -> Tool:
             Capability(c) for c in data.get("capabilities") or ()
         ),
         platforms=frozenset(str(p) for p in data.get("platforms") or ()),
-        examples=tuple(str(e) for e in data.get("examples") or ()),
+        examples=tuple(_example_from_json(e) for e in data.get("examples") or ()),
         homepage=data.get("homepage"),
         provenance=_provenance_from_json(data.get("provenance")),
     )
