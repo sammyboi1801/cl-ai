@@ -429,3 +429,40 @@ def test_a_broken_reranker_cannot_break_search() -> None:
 
     idx = index_of(tool("ls", "list directory contents"))
     assert idx.search("list", vectors=Hostile()) != []
+
+
+def test_the_semantic_weight_is_configurable_and_actually_applied() -> None:
+    """The weight has to be re-measured per backend, and after any
+    fine-tuning, so it cannot be a constant buried in the fusion.
+
+    Swept over the 150-case set, no off-the-shelf embedder earned a positive
+    weight: tool@1 fell monotonically from 0.322 at weight 0 to 0.271 at 1.0.
+    A weight that silently did nothing would have hidden that.
+    """
+    from cl_ai.retrieval.index import SEMANTIC_WEIGHT
+
+    tools = tuple(
+        Tool(name=f"t{i}", description=f"tool number {i} for listing files",
+             binary=f"t{i}")
+        for i in range(6)
+    )
+    index = ToolIndex(tools=tools)
+
+    class Reversing:
+        """A reranker that inverts the lexical order, so any influence at all
+        is visible in the result."""
+
+        @staticmethod
+        def available() -> bool:
+            return True
+
+        @staticmethod
+        def rerank(query: str, candidates, depth=None):
+            return list(reversed(list(candidates)))
+
+    ignored = index.search("listing files", limit=6, vectors=Reversing(),
+                           semantic_weight=0.0)
+    heeded = index.search("listing files", limit=6, vectors=Reversing(),
+                          semantic_weight=50.0)
+    assert [c.tool.name for c in ignored] != [c.tool.name for c in heeded]
+    assert 0.0 <= SEMANTIC_WEIGHT <= 2.0

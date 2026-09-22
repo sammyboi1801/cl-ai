@@ -117,6 +117,29 @@ MIN_COVERAGE = 0.3
 #: than the marginal relevance of a fourth git subcommand.
 MAX_PER_BINARY = 2
 
+#: Weight for the vector half in the RRF fusion, against 1.0 for lexical and
+#: 2.5 for prefix.
+#:
+#: NO OFF-THE-SHELF EMBEDDER HAS EARNED A POSITIVE WEIGHT YET. Swept over the
+#: 150-case set, gated, against a 0.322 lexical baseline:
+#:
+#:      weight    potion-base-8M    potion-retrieval-32M
+#:        0.00       0.322              0.322
+#:        0.15       0.314              0.305
+#:        0.25       0.297              0.297
+#:        0.60       0.280              0.288
+#:        1.00       0.271              0.263
+#:
+#: Monotonic, in the wrong direction, for both. tool@3 and tool@5 tick up a
+#: little at some weights, but tool@1 is what Tab inserts.
+#:
+#: The parameter exists because this has to be re-measured per backend and
+#: after any fine-tuning -- a weight tuned for one embedder is not evidence
+#: about another. The default is a placeholder for that future measurement,
+#: and is only reachable at all when a caller passes `vectors=`, which
+#: nothing does by default.
+SEMANTIC_WEIGHT = 0.5
+
 
 @dataclass(frozen=True)
 class Candidate:
@@ -309,6 +332,7 @@ class ToolIndex:
         min_coverage: float = MIN_COVERAGE,
         max_per_binary: int = MAX_PER_BINARY,
         vectors: object | None = None,
+        semantic_weight: float = SEMANTIC_WEIGHT,
     ) -> list[Candidate]:
         """Rank tools for `query`. Returns [] when nothing genuinely matches."""
         terms = tokenize_query(query)
@@ -366,11 +390,16 @@ class ToolIndex:
         weights = [1.0, 2.5]
         if semantic:
             rankings.append(semantic)
-            # Equal to the lexical half rather than above it. The two make
-            # different mistakes -- semantic-only ranked `ls` second for "list
-            # all running containers" -- and neither has earned precedence on
-            # this corpus.
-            weights.append(1.0)
+            # Weighted BELOW the lexical half, and the figure is measured.
+            #
+            # Equal weight was the original guess, on the reasoning that the
+            # two make different mistakes and neither had earned precedence.
+            # The reasoning was fine; the number was wrong. Every embedder
+            # tried ranks worse ALONE than lexical does -- semantic-only
+            # tool@1 0.22 against 0.32 -- and fusing a weaker ranker at equal
+            # weight drags the stronger one down. See SEMANTIC_WEIGHT for the
+            # full sweep.
+            weights.append(semantic_weight)
         fused = fuse_ranked_ids(rankings, weights=weights)
         boost = self._binary_boost(terms)
         # Full-query prefix matches, e.g. `git com` -> `git commit`. Tracked
