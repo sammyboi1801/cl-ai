@@ -74,6 +74,7 @@ def evaluate(
     *,
     context: ContextFacts | None = None,
     verbose: bool = False,
+    vectors: object | None = None,
 ) -> dict[str, float]:
     hit1 = hit3 = hit5 = 0
     reciprocal = 0.0
@@ -82,7 +83,7 @@ def evaluate(
 
     for query, wanted in CASES:
         start = time.perf_counter()
-        results = index.search(query, limit=5, context=context)
+        results = index.search(query, limit=5, context=context, vectors=vectors)
         latencies.append((time.perf_counter() - start) * 1000)
         names = [c.tool.name for c in results]
         rank = next((i for i, n in enumerate(names) if n in wanted), None)
@@ -129,8 +130,10 @@ def main() -> int:
     os_name = "win32" if os.name == "nt" else "linux"
     index = ToolIndex.from_catalog(catalog, shell=shell, os_name=os_name)
 
+    vectors = _reranker(index) if "--vectors" in sys.argv else None
+
     print(f"=== unrestricted ({len(index)} tools, shell={shell}) ===")
-    for key, value in evaluate(index, verbose=verbose).items():
+    for key, value in evaluate(index, verbose=verbose, vectors=vectors).items():
         print(f"  {key:8} {value:.3f}")
 
     inventory = discover()
@@ -138,9 +141,32 @@ def main() -> int:
         os=os_name, shell=shell, installed=frozenset(inventory.names)
     )
     print(f"\n=== gated to {len(inventory.names)} installed binaries ===")
-    for key, value in evaluate(index, context=context, verbose=verbose).items():
+    scores = evaluate(index, context=context, verbose=verbose, vectors=vectors)
+    for key, value in scores.items():
         print(f"  {key:8} {value:.3f}")
     return 0
+
+
+def _reranker(index: ToolIndex) -> object | None:
+    """Build the vector half, reporting what it cost.
+
+    Printed rather than silent because the first build embeds the whole corpus
+    one text at a time, which is minutes, and a user watching a blank terminal
+    would reasonably assume it had hung. Subsequent runs read the cache.
+    """
+    from cl_ai.embedding import build_embedder
+    from cl_ai.retrieval.vectors import VectorReranker
+
+    embedder = build_embedder()
+    if embedder is None:
+        print("no embedder available; set CL_AI_NEEDLE_WEIGHTS", file=sys.stderr)
+        return None
+
+    started = time.perf_counter()
+    print(f"embedding {len(index)} tools...", end=" ", flush=True)
+    reranker = VectorReranker(embedder=embedder).build(index.tools)
+    print(f"{time.perf_counter() - started:.1f}s, available={reranker.available()}")
+    return reranker if reranker.available() else None
 
 
 if __name__ == "__main__":

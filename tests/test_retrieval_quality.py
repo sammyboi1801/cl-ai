@@ -25,6 +25,21 @@ them is itself a finding: restricting to what is installed is a QUALITY signal,
 not merely a correctness one. Obscure tools are often excellent textual
 matches -- `gdown` really is for downloading a file -- so removing what cannot
 be run promotes the canonical answer.
+
+THE VECTOR HALF IS OFF, AND THE MEASUREMENT IS WHY
+`search()` accepts a reranker and defaults to None. Reproduced with
+`--vectors` against the same corpus, using Needle's embeddings:
+
+    gated, lexical + prefix             hit@1 0.704  hit@5 0.815  p50 28ms
+    gated, + Needle vectors             hit@1 0.444  hit@5 0.778  p50 61ms
+    gated, Needle vectors ALONE         hit@1 0.037
+
+Twenty-six points of hit@1 and double the latency, so it stays off. The
+semantic gap it was meant to close is real and still open -- "make a
+directory" shares no token with `mkdir`, and no lexical method reaches it --
+but closing it needs a model trained for retrieval. See
+src/cl_ai/embedding/needle_embedder.py for the full diagnosis, including why
+centering was checked first and exonerated.
 """
 
 from __future__ import annotations

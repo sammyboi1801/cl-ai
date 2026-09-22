@@ -56,6 +56,14 @@ files = ["src"]
 # (numpy, via hypothesis) fails to parse under the 3.10 target, and that has
 # nothing to do with our code. src is the surface py.typed advertises.
 
+# The Needle backend ships no stubs and is an optional dependency -- CI has no
+# 3GB checkpoint, and the adapter is written so that its absence is a normal
+# state rather than an error. The import is therefore unresolvable here by
+# design, and only the adapter is allowed to see it.
+#
+# This previously read `cactus_needle.*`, which is not what the distribution
+# installs; the override matched nothing until an adapter actually imported
+# the module and the type gate failed.
 [[tool.mypy.overrides]]
-module = ["cactus_needle.*"]
+module = ["needle", "needle.*"]
 ignore_missing_imports = true
